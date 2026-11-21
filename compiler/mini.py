@@ -89,6 +89,12 @@ BINOPS = {
     "*": b"\x48\x0f\xaf\xc3",      # imul rax, rbx
 }
 
+BITOPS = {
+    "&": b"\x48\x21\xd8",          # and rax, rbx
+    "|": b"\x48\x09\xd8",          # or  rax, rbx
+    "^": b"\x48\x31\xd8",          # xor rax, rbx
+}
+
 CMPS = {
     "==": b"\x0f\x94\xc0",   # sete al
     "!=": b"\x0f\x95\xc0",   # setne al
@@ -136,18 +142,56 @@ class Backend:
             self.e.e(b"\x5b")                 # pop rbx
             if op in BINOPS:
                 self.e.e(BINOPS[op])
+            elif op in BITOPS:
+                self.e.e(BITOPS[op])
+            elif op in ("<<", ">>"):
+                # rbx = left, rax = right(count) -> rcx=count, rax=left, shift
+                self.e.e(b"\x48\x89\xc1")                 # mov rcx, rax
+                self.e.e(b"\x48\x89\xd8")                 # mov rax, rbx
+                self.e.e(b"\x48\xd3\xe0" if op == "<<" else b"\x48\xd3\xe8")
             elif op in CMPS:
                 self.e.e(b"\x48\x39\xc3")     # cmp rbx, rax  (left - right)
                 self.e.e(CMPS[op])
                 self.e.e(b"\x0f\xb6\xc0")     # movzx eax, al
             else:
                 raise NotImplementedError(f"binop {op}")
+        elif t == "Unary":
+            op = getattr(n, "op", None)
+            opr = getattr(n, "operand", None) or getattr(n, "expr", None) or getattr(n, "value", None)
+            if op == "~":
+                self.expr(opr)
+                self.e.e(b"\x48\xf7\xd0")     # not rax
+            elif op == "-":
+                self.expr(opr)
+                self.e.e(b"\x48\xf7\xd8")     # neg rax
+            else:
+                raise NotImplementedError(f"unary {op}")
         elif t == "Index":
             self.addr_of(n)                       # rax = base + idx*8
             self.e.e(b"\x48\x8b\x00")           # mov rax, [rax]
         elif t == "Call":
             fn = getattr(n, "fn", None)
             name = getattr(fn, "name", None)
+            if name == "out8":
+                self.expr(n.args[1])          # value
+                self.e.e(b"\x50")             # push value
+                self.expr(n.args[0])          # port
+                self.e.e(b"\x48\x89\xc2")     # mov rdx, rax
+                self.e.e(b"\x58")             # pop rax (value)
+                self.e.e(b"\xee")             # out dx, al
+                return
+            if name == "in8":
+                self.expr(n.args[0])          # port
+                self.e.e(b"\x48\x89\xc2")     # mov rdx, rax
+                self.e.e(b"\xec")             # in al, dx
+                self.e.e(b"\x0f\xb6\xc0")     # movzx eax, al
+                return
+            if name == "cli":
+                self.e.e(b"\xfa")
+                return
+            if name == "hlt":
+                self.e.e(b"\xf4")
+                return
             if name == "halt":
                 self.e.e(b"\xfa\xf4\xeb\xfe")   # cli; hlt; jmp $
                 return

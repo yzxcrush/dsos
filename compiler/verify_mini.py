@@ -56,6 +56,18 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("位运算 & | ^ << >> ~", """
+fn _start() {
+    let a = 1 & 3
+    let b = a | 4
+    let c = b ^ 1
+    let d = c << 2
+    let e = d >> 1
+    let f = ~1 & 15
+    sys_exit(a + b + c + d + e + f)
+}
+""", 48),
+
     ("结构体字段读写", """
 type P { x: i32, y: i32 }
 fn _start() {
