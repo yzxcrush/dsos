@@ -69,3 +69,18 @@ fn _start() {
 3. `@asm` 多行 + 操作数约束
 4. `match` / `enum`
 → 四样齐了，才谈得上"用 Ds 写编译器"（阶段④）。
+
+## 补齐的 AST 字段（探明于本轮）
+
+```text
+AttrExpr: ['obj', 'name', 'line', 'col']
+TypeName: ['name', 'args', 'line', 'col']
+FieldDecl: ['name', 'type', 'default', 'line', 'col']
+TypeDecl: ['vis', 'attrs', 'line', 'col', 'name', 'generics', 'fields', 'alias', 'packed']
+LetStmt: ['name','pattern','type','value','mutable','line','col']
+```
+
+结论：
+- 结构体声明 → `TypeDecl`，字段是 `FieldDecl`（不是字符串列表）
+- 局部变量声明带类型标注 → `LetStmt.type` = `TypeName`
+- 字段访问 `p.x` → **`AttrExpr`**（赋值时为 `AssignStmt.target = AttrExpr`）
