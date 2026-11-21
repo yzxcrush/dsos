@@ -118,6 +118,9 @@ class Backend:
                 self.e.e(b"\x0f\xb6\xc0")     # movzx eax, al
             else:
                 raise NotImplementedError(f"binop {op}")
+        elif t == "Index":
+            self.addr_of(n)                       # rax = base + idx*8
+            self.e.e(b"\x48\x8b\x00")           # mov rax, [rax]
         elif t == "Call":
             fn = getattr(n, "fn", None)
             name = getattr(fn, "name", None)
@@ -129,6 +132,15 @@ class Backend:
             self.e.e(b"\x0f\x05")             # syscall
         else:
             raise NotImplementedError(f"expr node {t}")
+
+    def addr_of(self, n):
+        """Index: rax = base + index * 8"""
+        self.expr(n.obj if hasattr(n, "obj") else n.base)
+        self.e.e(b"\x50")                         # push base
+        self.expr(n.index)
+        self.e.e(b"\x48\x6b\xc0\x08")           # imul rax, rax, 8
+        self.e.e(b"\x5b")                         # pop rbx (base)
+        self.e.e(b"\x48\x01\xd8")               # add rax, rbx
 
     def if_stmt(self, n, tag):
         """if 当语句用：条件 → 两臂 → 结束标签。"""
@@ -153,10 +165,17 @@ class Backend:
             self.e.e(enc_store_rax(self.slot(n.name)))
         elif t == "AssignStmt":
             tgt = type(n.target).__name__
-            if tgt != "Var":
-                raise NotImplementedError("assign target must be a variable (this slice)")
-            self.expr(n.value)
-            self.e.e(enc_store_rax(self.slot(n.target.name, alloc=False)))
+            if tgt == "Var":
+                self.expr(n.value)
+                self.e.e(enc_store_rax(self.slot(n.target.name, alloc=False)))
+            elif tgt == "Index":
+                self.expr(n.value)                # rax = value
+                self.e.e(b"\x50")                 # push value
+                self.addr_of(n.target)            # rax = addr
+                self.e.e(b"\x5a")                 # pop rdx (value)
+                self.e.e(b"\x48\x89\x10")        # mov [rax], rdx
+            else:
+                raise NotImplementedError(f"assign target {tgt}")
         elif t == "WhileStmt":
             self.e.label(f"w_cond_{tag}")
             self.expr(n.cond)
