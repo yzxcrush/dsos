@@ -100,7 +100,8 @@ CMPS = {
 
 
 class Backend:
-    def __init__(self):
+    def __init__(self, target="linux"):
+        self.target = target
         self.e = Emit()
         self.slots = {}          # name -> rbp offset (negative)
         self.nslots = 0
@@ -147,6 +148,22 @@ class Backend:
         elif t == "Call":
             fn = getattr(n, "fn", None)
             name = getattr(fn, "name", None)
+            if name == "halt":
+                self.e.e(b"\xfa\xf4\xeb\xfe")   # cli; hlt; jmp $
+                return
+            if name == "p" and self.target == "bare":
+                arg = n.args[0]
+                if type(arg).__name__ != "Lit" or not isinstance(getattr(arg, "value", None), str):
+                    raise NotImplementedError("bare p() only supports string literals")
+                text = arg.value.encode("utf-8")
+                for i, ch in enumerate(text):
+                    if ch == 0x0A:                  # 换行：本切片只写一行，忽略
+                        continue
+                    # mov byte [0xB8000 + i*2], ch      C6 04 25 <d32> <imm8>
+                    self.e.e(b"\xc6\x04\x25" + struct.pack("<I", 0xB8000 + i * 2) + bytes([ch]))
+                    # mov byte [0xB8000 + i*2 + 1], 0x0F
+                    self.e.e(b"\xc6\x04\x25" + struct.pack("<I", 0xB8000 + i * 2 + 1) + b"\x0f")
+                return
             if name == "p":
                 arg = n.args[0]
                 if type(arg).__name__ != "Lit" or not isinstance(getattr(arg, "value", None), str):
@@ -239,9 +256,9 @@ def block_items(node):
     return getattr(node, "stmts", node if isinstance(node, list) else [node])
 
 
-def compile_source(src, units=1):
+def compile_source(src, units=1, target="linux"):
     prog = parse_program(src)
-    be = Backend()
+    be = Backend(target)
     e = be.e
     e.e(b"\x55")                    # push rbp
     e.e(b"\x48\x89\xe5")            # mov rbp, rsp
@@ -260,9 +277,12 @@ def compile_source(src, units=1):
     e.e(b"\x48\x81\xec" + struct.pack("<I", frame))   # sub rsp, frame
     for i, s in enumerate(body):
         be.stmt(s, i)
-    e.e(b"\x48\x81\xc4" + struct.pack("<I", frame))   # add rsp, frame
-    e.e(b"\x5d")                    # pop rbp
-    e.e(b"\xc3")                    # ret
+    if target != "bare":
+        e.e(b"\x48\x81\xc4" + struct.pack("<I", frame))   # add rsp, frame
+        e.e(b"\x5d")                # pop rbp
+        e.e(b"\xc3")                # ret
+    else:
+        e.e(b"\xfa\xf4\xeb\xfe")   # 兜底：cli; hlt; jmp $
     return e.finish()
 
 

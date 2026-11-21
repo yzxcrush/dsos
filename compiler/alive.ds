@@ -1,0 +1,87 @@
+# alive.ds — DsOS 最小「证明自己活着」版本（目标源码）
+# layer: Ds- (Cut)
+#
+# 状态：**尚不能通过 dscc 编译**。本文件是工具链的目标规格，逐条标注了缺失的能力。
+# 一旦 dscc 具备下面 [G1]~[G5] 标记的能力，本文件应能直接编译并写入镜像 0x9000 处运行。
+#
+# 期望行为（真机 / 模拟器一致）：
+#   1. 在 VGA 文本缓冲区写出一行 "DsOS alive"
+#   2. 通过 COM1 输出同样的字符串
+#   3. 停机（hlt 循环），不再返回
+
+package dsos
+
+# ---------------------------------------------------------------------------
+# [G1] 需要绝对地址内存写 + 段选择：dscc 目前只有栈上 let 与 sys_exit，没有 store。
+# [G2] 需要 u16/u8 字面量与窄类型：VGA 单元是 (字符, 属性) 两字节对。
+const VGA: u32 = 0xB8000
+const COM1: u16 = 0x3F8
+
+# ---------------------------------------------------------------------------
+# [G3] 需要 @asm（端口 IO）：out dx, al 无法用语言层表达。
+@asm fn out8(port: u16, value: u8) "out dx, al"
+@asm fn in8(port: u16) -> u8 "in al, dx"
+
+# [G3] 需要 @asm（停机）：hlt 没有语言级等价物。
+@asm fn halt() "hlt"
+
+# [G3] 需要 @asm：串口初始化是固定的端口序列。
+@asm fn uart_init() """
+    mov dx, 0x3F9
+    xor al, al
+    out dx, al
+    mov dx, 0x3FB
+    mov al, 0x80
+    out dx, al
+    mov dx, 0x3F8
+    mov al, 1
+    out dx, al
+    mov dx, 0x3F9
+    xor al, al
+    out dx, al
+    mov dx, 0x3FB
+    mov al, 3
+    out dx, al
+"""
+
+# ---------------------------------------------------------------------------
+# [G4] 需要指针/地址算术：向 VGA 写第 i 个字符 = VGA + i*2 处写 (ch, 0x0F)。
+fn vga_putc(row: u32, col: u32, ch: u8) {
+    let off: u32 = VGA + row * 160 + col * 2
+    # [G1] 需要 store< u16 >（这里直接用 u16 写一对）
+    raw_store_u16(off, u16(ch) | (0x0F << 8))
+}
+
+# [G4] 需要循环（while/for）+ 指针递增；dscc 目前明确"不支持循环"。
+fn puts(row: u32, s: *u8) -> u32 {
+    let col: u32 = 0
+    let i: u32 = 0
+    loop {
+        let c: u8 = raw_load_u8(s + i)
+        if c == 0 { break }
+        vga_putc(row, col, c)
+        uart_putc(c)
+        col = col + 1
+        i = i + 1
+    }
+    return col
+}
+
+fn uart_putc(c: u8) {
+    # [G3] 等发送保持寄存器空：需要 in8 + 位测试
+    loop {
+        if (in8(0x3FD) & 0x20) != 0 { break }
+    }
+    out8(COM1, c)
+}
+
+# ---------------------------------------------------------------------------
+# [G5] 需要裸机入口约定：不是 Linux 的 sys_exit，而是由 stage2 跳进来后直接执行。
+#      入口符号必须是 _start，且不发生任何 libc/运行时初始化。
+fn _start() {
+    uart_init()
+    puts(0, "DsOS alive\n")
+    loop {
+        halt()
+    }
+}
