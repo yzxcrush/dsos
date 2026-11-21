@@ -125,3 +125,43 @@ main_loop 空闲时：若 IRQFLAG==0 → 读 0x64 状态位0 → 有数据则读
 
 两条路径共用同一个 `enqueue_scan`（扫描码 → ASCII → 环形缓冲），不会重复入队。
 效果：**中断能用的机器走中断；不能用的机器自动降级，键盘照样能用。**
+
+
+## 9. 真机首启断电：一个被模拟器掩盖的缺陷（已修）
+
+首版 v0.4 烧进 USB 后，**真机开机即断电**（不是重启）。原因不在内核，而在 stage2 到内核的交接：
+
+```python
+# 错误写法
+_p = len(a.b) + 5                              # 这是 stage2 内的偏移，不是绝对地址
+a.emit(b"\xe9" + struct.pack("<i", KERNEL_ENTRY - _p))
+```
+
+`len(a.b)` 是块内偏移，而这条 `jmp` 实际执行在 `0x8000 + 偏移`，于是位移少算了 `0x8000`，
+跳转落到 `0x11000` 的空白处 → 取指异常 → 三重故障 → 固件**直接断电**（部分主板的策略是断电而非重启）。
+
+**为什么模拟器没抓到**：验收器是从 `0x9000` 直接起跑内核的，正好绕过了这条跳转。
+内核本身是对的，错的是没人测移交。
+
+修复与加固：
+
+1. 位移改为 `KERNEL_ENTRY - (STAGE2_ADDR + 偏移)`；
+2. 新增用例 **[h]**：从 stage2 的 64 位入口起跑，验证它真的跳进内核并打出横幅；
+3. stage2 在跳转前先往 VGA 写标记 `S2 OK`——**若内核没起来，屏幕上只剩这个标记**，
+   一眼能区分"移交失败"还是"内核失败"。
+
+## 10. 屏幕启动日志
+
+内核启动时按顺序打印，便于照片定位：
+
+```text
+DsOS v0.4  (keyboard + shell)
+[boot] idt: 256 gates, irq0/irq1 installed
+[boot] pic: remapped to 0x20/0x28, irq0+irq1 unmasked
+[boot] keyboard: irq1 enabled (poll fallback armed)
+[boot] acpi: parser ready, run 'shutdown' to power off
+dsos>
+```
+
+如果屏幕停在 `S2 OK` 而没有 `DsOS v0.4`，说明 stage2 → 内核的移交出了问题；
+如果连 `S2 OK` 都没有，说明卡在更早的 16/32 位阶段。

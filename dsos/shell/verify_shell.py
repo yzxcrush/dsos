@@ -201,6 +201,39 @@ def main():
     print(f"    screen tail: {text2.splitlines()[-3:] if text2 else 'EMPTY'}")
     print(f"[g] polling fallback works without IRQ1: {'PASS' if ok_poll else 'FAIL'}")
 
+    print("\n--- [h] real handoff: stage2 long-mode entry -> jump -> kernel ---")
+    # The real machine takes THIS path. Booting the kernel directly (case [a]) hides a
+    # wrong jump displacement in stage2 — exactly the bug that powered a real board off.
+    uc3 = Uc(UC_ARCH_X86, UC_MODE_64)
+    uc3.mem_map(0, LOWMEM)
+    uc3.mem_write(gb.STAGE2_ADDR, img[512:512 + 4096])
+    uc3.mem_write(0x9000, img[4608:4608 + 4096])
+    uc3.reg_write(UC_X86_REG_GDTR, (0, gb.STAGE2_ADDR + gb.GDT_OFF, 5 * 8 - 1, 0))
+    uc3.reg_write(UC_X86_REG_RSP, 0x70000)
+
+    def on_in3(uc, *a):
+        return 0x20 if a[0] == 0x3FD else 0x00
+
+    def on_out3(uc, *a):
+        pass
+
+    uc3.hook_add(UC_HOOK_INSN, on_out3, None, 1, 0, UC_X86_INS_OUT)
+    uc3.hook_add(UC_HOOK_INSN, on_in3, None, 1, 0, UC_X86_INS_IN)
+    st2 = bytes(img[512:512 + 4096])
+    lm = None
+    for i in range(len(st2) - 7):
+        if st2[i] == 0xEA and st2[i + 5:i + 7] == b"\x18\x00":
+            lm = struct.unpack_from("<I", st2, i + 1)[0]
+    print(f"    stage2 long-mode entry: {lm and hex(lm)}")
+    try:
+        uc3.emu_start(lm, 0, count=300000)
+    except UcError as e:
+        print(f"    (stopped: {e})")
+    text3 = vga_text(uc3)
+    print(f"    screen: {text3.splitlines()[:2] if text3 else 'EMPTY'}")
+    ok_handoff = "DsOS v0.4" in text3 and "dsos>" in text3
+    print(f"[h] stage2 jump reaches the kernel: {'PASS' if ok_handoff else 'FAIL'}")
+
     print("\n--- final screen ---")
     print(vga_text(uc)[-500:])
 
@@ -219,7 +252,7 @@ def main():
                 print(f"    LEGACY CHANGED: {name} {got}")
     print(f"[f] legacy images unchanged: {'PASS' if ok_legacy else 'FAIL'}")
 
-    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll])
+    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll, ok_handoff])
     print(f"\nRESULT: {'PASS' if allok else 'FAIL'}   (irq1 injections: {state['irqs']})")
     open(os.path.join(HERE, "verify_out.txt"), "w", encoding="utf-8").write(vga_text(uc))
     return 0 if allok else 1

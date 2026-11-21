@@ -175,8 +175,13 @@ def stage2(vga: bool = False, shell: bool = False) -> bytes:
     a.emit(b"\x48\xbc" + struct.pack("<Q", 0x70000))  # mov rsp,0x70000
     if shell:
         # hand control to the 64-bit kernel at KERNEL_ENTRY (its own uart/vga/idt/shell)
-        _p = len(a.b) + 5
-        a.emit(b"\xe9" + struct.pack("<i", KERNEL_ENTRY - _p))
+        # Marker in VGA text memory: if the kernel never takes over, the screen keeps
+        # showing "S2 OK" and nothing else -> the handoff (not the kernel) is at fault.
+        for _i, _cell in enumerate((0x07320753, 0x074F0720, 0x0720074B)):   # 'S','2',' ','O','K'
+            a.emit(b"\xc7\x04\x25" + a.u32(0xB8000 + _i * 4) + a.u32(_cell))
+        # NOTE: len(a.b) is a stage2-relative offset; the jump executes at STAGE2_ADDR + that.
+        _next = STAGE2_ADDR + len(a.b) + 5
+        a.emit(b"\xe9" + struct.pack("<i", KERNEL_ENTRY - _next))
 
     if vga:
         a.emit(b"\xc7\x04\x25" + a.u32(0x7F00) + a.u32(0))  # mov dword [0x7F00], 0

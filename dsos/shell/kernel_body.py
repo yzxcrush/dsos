@@ -148,11 +148,19 @@ def build():
         k.mov_al_imm(val)
         k.out_dx_al()
 
-    # ================================================================ banner
+    # ================================================================ banner + boot log
     k.lea("s_banner")
     k.call_label("puts")
-    k.call_label("print_prompt")
+    k.lea("s_log_idt")
+    k.call_label("puts")
+    k.lea("s_log_pic")
+    k.call_label("puts")
     k.sti()
+    k.lea("s_log_kbd")
+    k.call_label("puts")
+    k.lea("s_log_acpi")
+    k.call_label("puts")
+    k.call_label("print_prompt")
 
     # ================================================================ main loop
     k.label("main_loop")
@@ -446,6 +454,10 @@ def build():
         k.emit(text.encode() + b"\x00")
 
     s("s_banner", "DsOS v0.4  (keyboard + shell)\r\n")
+    s("s_log_idt", "[boot] idt: 256 gates, irq0/irq1 installed\r\n")
+    s("s_log_pic", "[boot] pic: remapped to 0x20/0x28, irq0+irq1 unmasked\r\n")
+    s("s_log_kbd", "[boot] keyboard: irq1 enabled (poll fallback armed)\r\n")
+    s("s_log_acpi", "[boot] acpi: parser ready, run 'shutdown' to power off\r\n")
     s("s_prompt", "dsos> ")
     s("s_nl", "\r\n")
     s("s_unknown", "unknown: ")
