@@ -115,6 +115,18 @@ def stage2(vga: bool = False, shell: bool = False) -> bytes:
     a.emit(b"\x8e\xc0")                      # mov es,ax
     a.emit(b"\x8e\xd0")                      # mov ss,ax
     a.emit(b"\xbc\x00\x7c")                  # mov sp,0x7c00
+    # ---- read the DSSCRIPT slot (LBA 630, 32 sectors = 16 KiB) to 0x2000:0x0000 ----
+    # LBA 630 = cyl 0 / head 10 / sector 1, so 32 sectors stay inside one track.
+    a.emit(b"\xfb")                            # sti (BIOS disk services want IRQs)
+    a.emit(b"\xb8\x00\x20")                  # mov ax,0x2000
+    a.emit(b"\x8e\xc0")                       # mov es,ax
+    a.emit(b"\x31\xdb")                       # xor bx,bx
+    a.emit(b"\xb8\x20\x02")                  # mov ax,0x0220  (AH=02 read, AL=32 sectors)
+    a.emit(b"\xb9\x01\x00")                  # mov cx,0x0001  (cyl 0, sector 1)
+    a.emit(b"\xba\x00\x0a")                  # mov dx,0x0a00  (head 10)
+    a.emit(b"\x8a\x16\xf0\x7d")              # mov dl,[0x7df0] (boot drive saved by stage1)
+    a.emit(b"\xcd\x13")                       # int 13h
+    a.emit(b"\xfa")                            # cli
     # A20 fast gate
     a.emit(b"\xe4\x92")                      # in al,0x92
     a.emit(b"\x0c\x02")                      # or al,2

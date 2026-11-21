@@ -512,6 +512,8 @@ def build():
     k.jmp("rc_done")
 
     k.label("dump_log")                 # print every recorded event, oldest first
+    k.mov_al_imm(0x0D)                  # start on a fresh line
+    k.call_label("putc")
     k.push_r(RBX)
     k.push_r(R12)
     k.push_r(R13)
