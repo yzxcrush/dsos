@@ -56,6 +56,22 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("match 字面量命中", """
+fn _start() {
+    let x = 3
+    let r = match x { 0 => 100, 3 => 42, _ => 7 }
+    sys_exit(r)
+}
+""", 42),
+
+    ("match 通配兜底", """
+fn _start() {
+    let x = 9
+    let r = match x { 0 => 100, 3 => 42, _ => 7 }
+    sys_exit(r)
+}
+""", 7),
+
     ("位运算 & | ^ << >> ~", """
 fn _start() {
     let a = 1 & 3

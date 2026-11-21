@@ -104,6 +104,8 @@ CMPS = {
     ">=": b"\x0f\x9d\xc0",   # setge al
 }
 
+SCRATCH = 4     # 每个函数预留的临时栈槽数（match 的 subject 等）
+
 
 class Backend:
     def __init__(self, target="linux"):
@@ -111,6 +113,13 @@ class Backend:
         self.e = Emit()
         self.slots = {}          # name -> rbp offset (negative)
         self.nslots = 0
+        self.scratch_i = 0       # 已用的临时槽计数
+
+    def temp(self):
+        """临时槽：位于已声明局部变量之下（更负），共 SCRATCH 个。返回 rbp 位移。"""
+        k = self.scratch_i
+        self.scratch_i += 1
+        return -8 * (self.nslots + SCRATCH - k)
 
     # ---- 变量 ----
     def slot(self, name, alloc=True):
@@ -166,6 +175,8 @@ class Backend:
                 self.e.e(b"\x48\xf7\xd8")     # neg rax
             else:
                 raise NotImplementedError(f"unary {op}")
+        elif t == "MatchExpr":
+            self.match_expr(n)
         elif t == "Index":
             self.addr_of(n)                       # rax = base + idx*8
             self.e.e(b"\x48\x8b\x00")           # mov rax, [rax]
@@ -228,6 +239,56 @@ class Backend:
             self.e.e(b"\x0f\x05")             # syscall
         else:
             raise NotImplementedError(f"expr node {t}")
+
+    def match_expr(self, n):
+        """match 当表达式：LitPat / WildcardPat / BindPat。结果在 rax。"""
+        # subject 先存到临时槽（只求值一次）
+        subj = self.temp()
+        self.expr(n.subject)
+        self.e.e(enc_store_rax(subj))
+        end = self.new_label("m_end")
+        default = None
+        # 先发比较（LitPat），跳过 BindPat/WildcardPat（它们无条件）
+        arms = getattr(n, "arms", []) or []
+        for i, arm in enumerate(arms):
+            pat = arm.pattern
+            pt = type(pat).__name__
+            if pt == "LitPat":
+                self.e.e(enc_load_rax(subj))          # rax = subject
+                self.e.e(b"\x50")                     # push
+                self.e.e(enc_mov_rax_imm(getattr(pat, "value", 0)))
+                self.e.e(b"\x5b")                     # pop rbx = subject
+                self.e.e(b"\x48\x39\xc3")           # cmp rbx, rax
+                self.e.jcc(b"\x84", f"m_arm_{i}")
+            elif pt == "BindPat":
+                # 无条件绑定：subject -> 变量
+                self.e.e(enc_load_rax(subj))
+                self.e.e(enc_store_rax(self.slot(pat.name)))
+                self.e.jmp(f"m_arm_{i}")
+            elif pt == "WildcardPat":
+                default = i
+        if default is None:
+            # 无通配：无匹配则结果为 0
+            self.e.e(b"\x31\xc0")                   # xor eax, eax
+        else:
+            self.e.jmp(f"m_arm_{default}")
+        for i, arm in enumerate(arms):
+            self.e.label(f"m_arm_{i}")
+            self.arm_body(arm.body)
+            self.e.jmp(end)
+        self.e.label(end)
+
+    def arm_body(self, body):
+        if type(body).__name__ == "Block":
+            for st in body.stmts:
+                self.stmt(st, None)
+        else:
+            self.expr(body)
+
+    def new_label(self, prefix):
+        n = getattr(self, "_label_n", 0) + 1
+        self._label_n = n
+        return f".{prefix}_{n}"
 
     def addr_of(self, n):
         """Index: rax = base + index * 8"""
@@ -317,7 +378,7 @@ def compile_source(src, units=1, target="linux"):
     for s in body:
         if type(s).__name__ == "LetStmt":
             be.slot(s.name)
-    frame = (be.nslots * 8 + 15) // 16 * 16
+    frame = ((be.nslots + SCRATCH) * 8 + 15) // 16 * 16
     e.e(b"\x48\x81\xec" + struct.pack("<I", frame))   # sub rsp, frame
     for i, s in enumerate(body):
         be.stmt(s, i)
@@ -386,7 +447,7 @@ def compile_source(src, units=1, target="linux"):   # noqa: F811
         for st in body:
             if type(st).__name__ == "LetStmt":
                 be.slot(st.name)
-        frame = (be.nslots * 8 + 15) // 16 * 16
+        frame = ((be.nslots + SCRATCH) * 8 + 15) // 16 * 16
         if frame:
             e.e(b"\x48\x81\xec" + struct.pack("<I", frame))
         # 参数落栈
@@ -573,7 +634,7 @@ def compile_source(src, units=1, target="linux"):   # noqa: F811
                     be.svars[st.name] = (first, N, lay)
                 else:
                     be.slot(st.name)
-        frame = (be.nslots * 8 + 15) // 16 * 16
+        frame = ((be.nslots + SCRATCH) * 8 + 15) // 16 * 16
         if frame:
             e.e(b"\x48\x81\xec" + struct.pack("<I", frame))
         for i in range(len(params)):
