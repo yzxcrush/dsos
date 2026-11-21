@@ -53,10 +53,11 @@ dsos> help / ticks / clear / shutdown / reboot
 
 | 文件 | 输出通道 | 说明 |
 |---|---|---|
-| `dsos-x86_64.img` | **仅 COM1 串口** | 原始版本，hash 保持 `32669f00…` 不变 |
-| `dsos-x86_64-vga.img` | **VGA 屏幕 + COM1 串口** | 新增；没有串口线时用这个，由 `gen_boot.py --vga` 生成 |
+| **`dsos-x86_64-shell.img`** | **VGA + COM1** | **当前唯一发行镜像**（v0.4）：键盘 + `dsos>` shell + ACPI 关机 + 启动日志；源码与验收报告在 `dsos/shell/` |
 | `dsos-bios.img` | COM1 串口 | 512B 兜底扇区，只打印 `DsOS booted.`（与 `toolchain/step1/bare_serial.bin` 字节相同） |
-| **`dsos-x86_64-shell.img`** | **VGA + COM1** | **v0.4**：键盘 + `dsos>` shell + ACPI 关机；源码与验收报告在 `dsos/shell/` |
+
+> 旧版本 `dsos-x86_64.img`（仅串口心跳）与 `dsos-x86_64-vga.img`（v0.3 心跳）已从当前树中移除，
+> 仍可在 git 历史与 `dsos-baremetal-v0.3-vga` release 中取得。`gen_boot.py` 仍可重新生成它们。
 
 > `dsos-bios.img` 更正：旧文档称它输出 `DsOS alive` 并递增 tick，**这是错的**——它只输出 `DsOS booted.`，没有心跳。
 
