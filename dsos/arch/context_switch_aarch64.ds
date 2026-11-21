@@ -1,0 +1,33 @@
+# DsOS / AArch64 上下文切换参考（Zero 2 W，Cortex-A53）
+# 需要 AArch64 后端；当前 Cut 原型只生成 Thumb，故本文件是架构参考。
+# 调用约定：x0 = old_sp 指针，x1 = next_sp 指针；纯 @asm。
+
+fn context_switch_aarch64() {
+    @asm "sub sp, sp, #160"
+    @asm "stp x19, x20, [sp, #0]"
+    @asm "stp x21, x22, [sp, #16]"
+    @asm "stp x23, x24, [sp, #32]"
+    @asm "stp x25, x26, [sp, #48]"
+    @asm "stp x27, x28, [sp, #64]"
+    @asm "stp x29, x30, [sp, #80]"
+    @asm "stp d8, d9, [sp, #96]"
+    @asm "stp d10, d11, [sp, #112]"
+    @asm "stp d12, d13, [sp, #128]"
+    @asm "stp d14, d15, [sp, #144]"
+    @asm "mov x9, sp"
+    @asm "str x9, [x0]"
+    @asm "ldr x9, [x1]"
+    @asm "mov sp, x9"
+    @asm "ldp x19, x20, [sp, #0]"
+    @asm "ldp x21, x22, [sp, #16]"
+    @asm "ldp x23, x24, [sp, #32]"
+    @asm "ldp x25, x26, [sp, #48]"
+    @asm "ldp x27, x28, [sp, #64]"
+    @asm "ldp x29, x30, [sp, #80]"
+    @asm "ldp d8, d9, [sp, #96]"
+    @asm "ldp d10, d11, [sp, #112]"
+    @asm "ldp d12, d13, [sp, #128]"
+    @asm "ldp d14, d15, [sp, #144]"
+    @asm "add sp, sp, #160"
+    @asm "ret"
+}

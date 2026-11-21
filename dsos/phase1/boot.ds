@@ -1,0 +1,10 @@
+# DsOS Phase 1 启动桩（Ds-）
+# 注意：Multiboot 入口是 32 位保护模式；16 位仅存在于 legacy MBR 路径。
+# 本文件是启动阶段的 Ds- 契约，build.py 生成等价机器码。
+@entry _start
+@unsafe fn _start() -> ! {
+    # 32-bit: lgdt -> CR0.PE -> far jmp
+    # 32-bit: 页表 0x9000/0xA000/0xB000 -> CR3 -> CR4.PAE -> EFER.LME -> CR0.PG
+    # 64-bit: 设置段/栈 -> kernel_main
+    kernel_main()
+}

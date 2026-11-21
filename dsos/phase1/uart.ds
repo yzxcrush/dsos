@@ -1,0 +1,8 @@
+# DsOS Phase 1 UART（Ds-）
+# COM1 是 x86 端口 I/O，不是 MMIO；@addr 不属于 16 个冻结 token。
+# 地址：0x3F8 数据，0x3FD LSR
+@unsafe fn uart_init() -> () { }
+@unsafe fn putc(c: u8) -> () { }
+@unsafe fn puts(s: *u8) -> () { }
+@unsafe fn getc() -> u8 { return 0 }
+@unsafe fn has_data() -> bool { return false }

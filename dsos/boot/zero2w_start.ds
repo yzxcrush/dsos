@@ -1,0 +1,49 @@
+# DsOS / Raspberry Pi Zero 2 W（Cortex-A53，AArch64）启动参考
+# 注意：Zero 2 W 不是 Thumb/.uf2；固件把 kernel8.img 加载到 0x80000，
+# 本文件需要 AArch64 后端（v0.2）。当前用纯 @asm 表示，避免 Cut 32 位类型限制。
+
+@static STACK_TOP: u32 = 0x00200000
+@static UART0_DR: u32 = 0x3F201000
+
+@asm ".section .text.boot"
+@asm ".globl _start"
+@asm "_start:"
+@asm "  mrs x0, CurrentEL"       # 读取当前异常级别
+@asm "  and x0, x0, #0xC"
+@asm "  cmp x0, #0x8"            # EL2?
+@asm "  b.ne 1f"
+@asm "  mov x0, #0x3"            # EL2 -> EL1 (HCR_EL2.RW=1)
+@asm "  msr hcr_el2, x0"
+@asm "  mov x0, #0x3C5"          # SPSR_EL2: EL1h, DAIF 屏蔽
+@asm "  msr spsr_el2, x0"
+@asm "  adr x0, el1_entry"
+@asm "  msr elr_el2, x0"
+@asm "  eret"
+@asm "1:"
+@asm "el1_entry:"
+@asm "  ldr x0, =STACK_TOP"
+@asm "  mov sp, x0"
+@asm "  ldr x0, =_sbss"
+@asm "  ldr x1, =_ebss"
+@asm "  mov x2, #0"
+@asm "clear_bss:"
+@asm "  cmp x0, x1"
+@asm "  b.hs clear_done"
+@asm "  str x2, [x0], #8"
+@asm "  b clear_bss"
+@asm "clear_done:"
+@asm "  ldr x0, =__vector_table"
+@asm "  msr vbar_el1, x0"
+@asm "  bl uart_init"
+@asm "  bl kernel_main"
+@asm "hang:"
+@asm "  wfe"
+@asm "  b hang"
+
+@asm ".section .vector_table,\"a\",%progbits"
+@asm ".balign 2048"
+@asm ".globl __vector_table"
+@asm "__vector_table:"
+@asm ".rept 16"
+@asm "  .word 0, 0, 0, 0"
+@asm ".endr"

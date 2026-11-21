@@ -1,0 +1,10 @@
+# Ds/Cut：Thumb-2 上下文切换（RP2350 / Cortex-M33）
+# 调用约定：r0 = old_sp 指针，r1 = next_sp 指针；纯 @asm，无 prologue/epilogue。
+fn context_switch(old: *u32, next: *u32) {
+    @asm "push {r4-r11, lr}"
+    @asm "mov r2, sp"
+    @asm "str r2, [r0]"
+    @asm "ldr r2, [r1]"
+    @asm "mov sp, r2"
+    @asm "pop {r4-r11, pc}"
+}

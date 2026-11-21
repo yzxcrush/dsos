@@ -1,0 +1,71 @@
+# DsOS / RP2350（Cortex-M33）启动代码 —— Ds/Cut，Thumb-2
+# 产物：ELF → UF2；向量表必须在 Flash 0x10000000。
+
+@static VTOR: u32 = 0xE000ED08
+@static UART0_DR: u32 = 0x40034000
+
+@asm ".section .vector_table,\"a\",%progbits"
+@asm ".globl __vector_table"
+@asm "__vector_table:"
+@asm ".word 0x20082000"          # 初始栈顶
+@asm ".word reset_handler"       # Reset
+@asm ".word fault_handler"       # NMI
+@asm ".word fault_handler"       # HardFault
+@asm ".word fault_handler"       # MemManage
+@asm ".word fault_handler"       # BusFault
+@asm ".word fault_handler"       # UsageFault
+@asm ".word 0"
+@asm ".word 0"
+@asm ".word 0"
+@asm ".word 0"
+@asm ".word fault_handler"       # SVCall
+@asm ".word fault_handler"       # DebugMon
+@asm ".word 0"
+@asm ".word fault_handler"       # PendSV
+@asm ".word fault_handler"       # SysTick
+
+@asm ".section .text"
+@asm ".globl reset_handler"
+@asm "reset_handler:"
+@asm "  ldr r0, =0xE000ED08"
+@asm "  ldr r1, =__vector_table"
+@asm "  str r1, [r0]"            # VTOR = 0x10000000
+@asm "  ldr r0, =_sidata"
+@asm "  ldr r1, =_sdata"
+@asm "  ldr r2, =_edata"
+@asm "copy_data:"
+@asm "  cmp r1, r2"
+@asm "  bhs copy_done"
+@asm "  ldr r3, [r0], #4"
+@asm "  str r3, [r1], #4"
+@asm "  b copy_data"
+@asm "copy_done:"
+@asm "  ldr r0, =_sbss"
+@asm "  ldr r1, =_ebss"
+@asm "  movs r3, #0"
+@asm "zero_bss:"
+@asm "  cmp r0, r1"
+@asm "  bhs zero_done"
+@asm "  str r3, [r0], #4"
+@asm "  b zero_bss"
+@asm "zero_done:"
+@asm "  bl main"
+@asm "hang:"
+@asm "  b hang"
+
+@asm ".globl fault_handler"
+@asm "fault_handler:"
+@asm "  b fault_handler"
+
+fn putc(c: u8) {
+    *UART0_DR = c
+}
+
+fn main() -> u32 {
+    putc(68)   # 'D'
+    putc(115)  # 's'
+    putc(79)   # 'O'
+    putc(83)   # 'S'
+    putc(10)
+    return 0
+}

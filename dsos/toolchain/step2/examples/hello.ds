@@ -1,0 +1,5 @@
+# Step 2 输入：无参数、无局部变量、单 sys_write
+# layer: Ds-（syscall 边界）
+@unsafe fn _start() {
+    sys_write(1, "DsOS booted.\n")
+}

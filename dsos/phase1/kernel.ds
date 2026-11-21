@@ -1,0 +1,30 @@
+# DsOS Phase 1 内核（Ds- 契约；build.py 生成等价机器码）
+# 仅使用基础版 + Ds-；模块接口为 Phase 2 预埋，永不改签名。
+
+struct Module {
+    name: [u8; 32],
+    entry: u64,
+    calls: [u64; 8],
+    state: u32,
+}
+
+static mut modules: [Module; 64]
+static mut module_count: u32 = 0
+
+fn module_load(bin: *u8, len: u64) -> i32 { return -1; }
+fn module_unload(name: *u8) -> i32 { return -1; }
+fn module_list() -> () { }
+
+# Phase 2 模块侧标准接口（注释声明，不参与 Phase 1 编译）
+# @export fn module_init() -> i32;
+# @export fn module_exit() -> ();
+#
+# 预留 syscall 编号：
+# 1 sys_write  2 sys_read  3 sys_alloc  4 sys_free  5 sys_yield
+
+fn kernel_main() -> ! {
+    # build.py 等价实现：
+    # uart_init(); puts("DsOS alive\r\n")
+    # loop: 输入回显；回车打印 keys/lines；约 1s 打印 tick
+    loop { }
+}

@@ -1,0 +1,10 @@
+# Step 4：函数调用 + 栈帧 + 局部变量
+# layer: Ds-
+fn add1(x: i32) -> i32 {
+    return x
+}
+
+fn _start() {
+    let y = add1(41)
+    sys_exit(y)
+}

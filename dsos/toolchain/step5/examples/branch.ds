@@ -1,0 +1,14 @@
+# Step 5：算术 + 比较 + if/else
+# layer: Ds-
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn _start() {
+    let x = add(20, 22)
+    if x == 42 {
+        sys_exit(42)
+    } else {
+        sys_exit(1)
+    }
+}

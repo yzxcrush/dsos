@@ -1,0 +1,9 @@
+# DsOS Phase 1 GDT（Ds- 数据，非关键字扩展）
+# flat 代码段/数据段 + 长模式代码段/数据段
+GDT_ENTRIES:
+    null        = 0x0000000000000000
+    code32      = 0x00CF9A000000FFFF
+    data32      = 0x00CF92000000FFFF
+    code64      = 0x00AF9A000000FFFF
+    data64      = 0x00AF92000000FFFF
+GDT_LIMIT = 5 * 8 - 1

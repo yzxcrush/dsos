@@ -1,0 +1,16 @@
+# DsOS Step 3 加载器契约
+# layer: Ds-（Cut/内核边界）
+# deps: Step 2 dscc x86_64 后端
+#
+# 该函数在真实 DsOS 内核中由 Cut 实现；本仓库 Step 3 先用 Python 宿主
+# 加载器验证同一接口语义：
+#   1. 分配可执行页
+#   2. 拷贝 code[0..len]
+#   3. 跳到入口 offset 0
+#   4. 提供 sys_write/sys_exit 入口
+
+@unsafe fn load_and_run(code: *u8, len: u64) -> ! {
+    # 真实实现：mmap RWX -> memcpy -> jmp entry
+    # 这里保留 Ds- 契约，具体机器码由 Cut/后端生成。
+    loop { }
+}

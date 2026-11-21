@@ -1,0 +1,11 @@
+# Step 1 语义对照（DsOS syscall ABI）
+# 注意：这是语义参考，不是 Step 2 的输入；Step 2 会直接生成下面的机器码。
+# layer: Ds-（Cut/syscall 边界）
+# deps: none
+
+@unsafe fn _start() {
+    # 系统调用：write(fd=1, buf="DsOS booted.\n", count=13)
+    sys_write(1, "DsOS booted.\n")
+    # 系统调用：exit(0)
+    sys_exit(0)
+}
