@@ -49,6 +49,13 @@ fn _start() {
 }
 """, 42),
 
+    ("p(\"hi\") 字符串", """
+fn _start() {
+    p("DsOS alive")
+    sys_exit(0)
+}
+""", 0, b"DsOS alive"),
+
     ("嵌套二元运算", """
 fn _start() {
     let a = 3
@@ -71,25 +78,37 @@ def run_one(src):
     uc.reg_write(UC_X86_REG_RBP, 0x8000)
     st = {}
 
+    out = bytearray()
+
     def on_syscall(uc, ud):
-        if uc.reg_read(UC_X86_REG_RAX) == 60:
+        nonlocal out
+        rax = uc.reg_read(UC_X86_REG_RAX)
+        if rax == 60:
             st["exit"] = uc.reg_read(UC_X86_REG_RDI)
             uc.emu_stop()
+        elif rax == 1:
+            buf = uc.reg_read(UC_X86_REG_RSI)
+            n = uc.reg_read(UC_X86_REG_RDX)
+            out += bytes(uc.mem_read(buf, n))
+            uc.reg_write(UC_X86_REG_RAX, n)
 
     uc.hook_add(UC_HOOK_INSN, on_syscall, None, 1, 0, UC_X86_INS_SYSCALL)
     try:
         uc.emu_start(BASE, 0, count=500000)
     except UcError as e:
         return None, f"{len(code)}B, {e}"
-    return st.get("exit"), f"{len(code)}B"
+    return st.get("exit"), f"{len(code)}B", bytes(out)
 
 
 ok_all = True
-for name, src, want in CASES:
-    got, info = run_one(src)
-    ok = got == want
+for case in CASES:
+    name, src, want = case[0], case[1], case[2]
+    want_out = case[3] if len(case) > 3 else b""
+    got, info, out = run_one(src)
+    ok = (got == want) and (out == want_out)
     ok_all &= ok
-    print(f"  [{'PASS' if ok else 'FAIL'}] {name:18} want={want:<4} got={got}  ({info})")
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name:18} want={want:<4} got={got}"
+          f"{'  out=' + repr(out) if want_out else ''}  ({info})")
 
 print(f"\nRESULT: {'PASS' if ok_all else 'FAIL'}  ({len(CASES)} cases)")
 sys.exit(0 if ok_all else 1)

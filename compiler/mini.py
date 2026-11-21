@@ -23,6 +23,8 @@ class Emit:
         self.b = bytearray()
         self.labels = {}
         self.fix = []
+        self.data = bytearray()          # .rodata：字符串字面量
+        self.data_labels = {}            # label -> offset inside .data
 
     def e(self, *parts):
         for p in parts:
@@ -42,7 +44,25 @@ class Emit:
     def jcc(self, cc, label):
         self.rel(b"\x0f" + cc, label)
 
+    def add_string(self, text: str) -> str:
+        label = f".str{len(self.data_labels)}"
+        self.data_labels[label] = len(self.data)
+        self.data += text.encode("utf-8")
+        return label
+
+    def lea_rip(self, reg, label):
+        """lea reg, [rip+disp32]  — 目标可以是代码标签或 .rodata 标签"""
+        assert reg == 6, "this slice only supports rsi"
+        self.e(b"\x48\x8d\x35")
+        at = len(self.b)
+        self.e(b"\x00\x00\x00\x00")
+        self.fix.append((at, label))
+
     def finish(self):
+        code_len = len(self.b)
+        for label, off in self.data_labels.items():
+            self.labels[label] = code_len + off
+        self.b += self.data
         for at, label in self.fix:
             disp = self.labels[label] - (at + 4)
             self.b[at:at + 4] = struct.pack("<i", disp)
@@ -99,6 +119,9 @@ class Backend:
         t = type(n).__name__
         if t == "Lit":
             v = getattr(n, "value", None)
+            if isinstance(v, str):
+                # 字符串只作为 p() 的实参使用（本切片不做字符串值运算）
+                raise NotImplementedError("string literal only allowed as p(...) argument")
             if not isinstance(v, int):
                 raise NotImplementedError(f"literal not int: {v!r}")
             self.e.e(enc_mov_rax_imm(v))
@@ -124,6 +147,18 @@ class Backend:
         elif t == "Call":
             fn = getattr(n, "fn", None)
             name = getattr(fn, "name", None)
+            if name == "p":
+                arg = n.args[0]
+                if type(arg).__name__ != "Lit" or not isinstance(getattr(arg, "value", None), str):
+                    raise NotImplementedError("p() only supports string literals in this slice")
+                text = arg.value
+                label = self.e.add_string(text)
+                self.e.e(b"\xb8\x01\x00\x00\x00")          # mov eax, 1 (SYS_write)
+                self.e.e(b"\xbf\x01\x00\x00\x00")          # mov edi, 1 (stdout)
+                self.e.lea_rip(6, label)                       # lea rsi, [rip+str]
+                self.e.e(b"\xba" + struct.pack("<I", len(text.encode("utf-8"))))  # mov edx, len
+                self.e.e(b"\x0f\x05")                        # syscall
+                return
             if name != "sys_exit":
                 raise NotImplementedError(f"call {name}")
             self.expr(n.args[0])
