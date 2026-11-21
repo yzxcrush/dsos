@@ -57,7 +57,8 @@ def boot_sector(p, label):
     out = [f"### {label}  ({len(b)} bytes = {len(b)/1024:.0f} KiB)"]
     if len(b) >= 512:
         sig = b[510:512]
-        out.append(f"  boot sig @510 = {sig!r} ({'valid 0xAA55' if sig == b'\\x55\\xaa' else 'INVALID'})")
+        ok = sig == bytes([0x55, 0xAA])
+        out.append(f"  boot sig @510 = {sig.hex()} ({'valid 0x55AA' if ok else 'INVALID'})")
         out.append(f"  first bytes: {b[:16].hex(' ')}")
     # search for strings
     for s in (b"DsOS", b"alive", b"tick"):
