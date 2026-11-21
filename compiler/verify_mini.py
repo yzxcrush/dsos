@@ -56,6 +56,16 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("用户函数调用", """
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+fn _start() {
+    let x = add(20, 22)
+    sys_exit(x)
+}
+""", 42),
+
     ("嵌套二元运算", """
 fn _start() {
     let a = 3

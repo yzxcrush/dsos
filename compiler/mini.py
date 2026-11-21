@@ -292,3 +292,110 @@ if __name__ == "__main__":
     code = compile_source(src)
     out.write_bytes(code)
     print(f"✓ {out} ({len(code)} bytes)")
+
+
+# ===========================================================================
+# 阶段④ 第 1 项：用户函数调用与参数
+# （在文件末尾重定义 compile_source，覆盖上面的单函数版本）
+# ===========================================================================
+ARG_REGS = (b"\x48\x89\x7d", b"\x48\x89\x75", b"\x48\x89\x55")  # mov [rbp+d], rdi/rsi/rdx
+
+
+def _call(self, label):
+    pos = len(self.b)
+    self.e(b"\xe8", b"\x00\x00\x00\x00")
+    self.fix.append((pos + 1, label))
+
+
+Emit.call = _call
+
+
+def compile_source(src, units=1, target="linux"):   # noqa: F811
+    prog = parse_program(src)
+    items = prog.items if hasattr(prog, "items") else prog
+    fns = [it for it in items if type(it).__name__ == "FnDecl"]
+    fnmap = {f.name: f for f in fns}
+    if "_start" not in fnmap:
+        raise NameError("no _start")
+    global _FNMAP_CACHE
+    _FNMAP_CACHE = fnmap
+
+    e = Emit()
+    order = ["_start"] + [f.name for f in fns if f.name != "_start"]
+
+    for fname in order:
+        fn = fnmap[fname]
+        be = Backend(target)
+        be.e = e
+        be.fn = fn
+        be.ep = f".ep_{fname}"
+        e.label("fn_" + fname)
+        e.e(b"\x55")                  # push rbp
+        e.e(b"\x48\x89\xe5")        # mov rbp, rsp
+
+        params = getattr(fn, "params", []) or []
+        for i, p in enumerate(params):
+            name = getattr(p, "name", None) or (p[0] if isinstance(p, (list, tuple)) else None)
+            off = be.slot(name)
+        # 先扫局部变量，确定帧大小
+        body = block_items(fn.body)
+        for st in body:
+            if type(st).__name__ == "LetStmt":
+                be.slot(st.name)
+        frame = (be.nslots * 8 + 15) // 16 * 16
+        if frame:
+            e.e(b"\x48\x81\xec" + struct.pack("<I", frame))
+        # 参数落栈
+        for i in range(len(params)):
+            off = be.slots[getattr(params[i], "name", None) or params[i][0]]
+            e.e(ARG_REGS[i] + struct.pack("<b", off))
+
+        for i, st in enumerate(body):
+            be.stmt(st, i)
+
+        e.label(be.ep)
+        if frame:
+            e.e(b"\x48\x81\xc4" + struct.pack("<I", frame))
+        e.e(b"\x5d")                  # pop rbp
+        e.e(b"\xc3")                  # ret
+
+    return e.finish()
+
+
+# --- Backend 扩展：return 与用户函数调用 ---
+def _stmt(self, n, tag):
+    t = type(n).__name__
+    if t == "ReturnStmt":
+        val = getattr(n, "value", None)
+        if val is not None:
+            self.expr(val)
+        self.e.jmp(self.ep)
+        return
+    return _orig_stmt(self, n, tag)
+
+
+_orig_stmt = Backend.stmt
+Backend.stmt = _stmt
+
+
+def _expr(self, n):
+    if type(n).__name__ == "Call":
+        fn = getattr(n, "fn", None)
+        name = getattr(fn, "name", None)
+        if name and name in _FNMAP_CACHE:
+            args = list(getattr(n, "args", []) or [])
+            if len(args) > 3:
+                raise NotImplementedError(">3 args")
+            for a in args:
+                self.expr(a)
+                self.e.e(b"\x50")             # push arg
+            for reg in (b"\x5f", b"\x5e", b"\x5a")[:len(args)]:   # pop rdi/rsi/rdx
+                self.e.e(reg)
+            self.e.call("fn_" + name)
+            return
+    return _orig_expr(self, n)
+
+
+_orig_expr = Backend.expr
+Backend.expr = _expr
+_FNMAP_CACHE = {}
