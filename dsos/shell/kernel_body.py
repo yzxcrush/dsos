@@ -32,6 +32,8 @@ def build():
     # ================================================================ entry
     k.label("_start")
     k.emit(b"\xfc")                # cld: never trust the direction flag from firmware
+    k.mov_al_imm(0)
+    k.call_label("log_evt")         # boot
     k.call_label("draw_desktop")
     # call the helpers once, then jump OVER them (they end in `ret` and must not fall through)
     k.call_label("uart_init")
@@ -128,6 +130,10 @@ def build():
 
     k.label("repaint_bars")         # title + status only (console untouched)
     k.store_byte_abs(SCROLL_LOCK, 1)
+    k.load_r32_abs(RAX, VGA_ROW)    # painting moves the cursor -> save it
+    k.store_r32_abs(SAVE_ROW, RAX)
+    k.load_r32_abs(RAX, VGA_COL)
+    k.store_r32_abs(SAVE_COL, RAX)
     k.mov_ri(RDI, 0xB8000)
     k.mov_al_imm(0x1F)
     k.call_label("fill_row")
@@ -149,6 +155,10 @@ def build():
     k.call_label("puts")
     k.store_byte_abs(ATTR, 0x0F)
     k.store_byte_abs(SCROLL_LOCK, 0)
+    k.load_r32_abs(RAX, SAVE_ROW)   # restore the console cursor
+    k.store_r32_abs(VGA_ROW, RAX)
+    k.load_r32_abs(RAX, SAVE_COL)
+    k.store_r32_abs(VGA_COL, RAX)
     k.ret()
 
     k.label("fill_row")             # rdi = row, al = attribute -> blank it
@@ -205,7 +215,7 @@ def build():
     k.store_byte_abs(ATTR, 0x70)
     k.mov_r32i(RAX, STATUS_ROW)
     k.store_r32_abs(VGA_ROW, RAX)
-    k.mov_r32i(RAX, 400)                # column 50
+    k.mov_r32i(RAX, 100)                # column 50 (byte offset = col*2)
     k.store_r32_abs(VGA_COL, RAX)
     k.lea("s_tick_lbl")
     k.call_label("puts")
@@ -254,6 +264,30 @@ def build():
     k.jnz("pu_pop")
     k.ret()
 
+    k.label("log_evt")              # al = event id; records (id, tick) in the ring
+    k.push_r(RAX)
+    k.push_r(RBX)
+    k.push_r(RCX)
+    k.push_r(RDX)
+    k.movzx_eax_al()
+    k.load_r32_abs(RCX, LOG_COUNT)
+    k.alu_i("cmp", RCX, 32)
+    k.jae("log_full")
+    k.mov_rr(RBX, RCX)
+    k.shl_r64_imm(RBX, 3)
+    k.mov_r32i(RDX, LOG_BASE)
+    k.alu("add", RDX, RBX)
+    k.st8(RDX, 0, RAX)              # id
+    k.load_r32_abs(RAX, TICKS)
+    k.st32(RDX, 4, RAX)             # tick
+    k.inc_dword_abs(LOG_COUNT)
+    k.label("log_full")
+    k.pop_r(RDX)
+    k.pop_r(RCX)
+    k.pop_r(RBX)
+    k.pop_r(RAX)
+    k.ret()
+
     k.label("print_prompt")
     k.lea("s_prompt")
     k.call_label("puts")
@@ -261,6 +295,8 @@ def build():
 
     # ================================================================ IDT
     k.label("init_idt")
+    k.mov_al_imm(1)
+    k.call_label("log_evt")         # idt
     k.mov_r32i(RDI, IDT)
     k.xor_self(RAX)
     k.mov_r32i(RCX, 4096)
@@ -309,9 +345,13 @@ def build():
     k.call_label("puts")
     k.lea("s_log_idt")
     k.call_label("puts")
+    k.mov_al_imm(2)
+    k.call_label("log_evt")         # pic
     k.lea("s_log_pic")
     k.call_label("puts")
     k.sti()
+    k.mov_al_imm(3)
+    k.call_label("log_evt")         # keyboard
     k.lea("s_log_kbd")
     k.call_label("puts")
     k.lea("s_log_acpi")
@@ -435,7 +475,6 @@ def build():
     k.mov_al_imm(0x0A)
     k.call_label("putc")
     k.call_label("run_command")
-    k.call_label("update_status")
     k.call_label("print_prompt")
     k.ret()
 
@@ -450,12 +489,14 @@ def build():
 
     for name, target in (("s_cmd_help", "c_help"), ("s_cmd_ticks", "c_ticks"),
                          ("s_cmd_clear", "c_clear"), ("s_cmd_shutdown", "c_shutdown"),
-                         ("s_cmd_reboot", "c_reboot")):
+                         ("s_cmd_reboot", "c_reboot"), ("s_cmd_log", "c_log")):
         k.lea(name)
         k.call_label("streq")
         k.emit(b"\x84\xc0")          # test al,al
         k.jnz(target)
 
+    k.mov_al_imm(13)
+    k.call_label("log_evt")         # unknown command
     k.lea("s_unknown")
     k.call_label("puts")
     k.mov_r32i(RSI, LINE)
@@ -466,12 +507,59 @@ def build():
     k.store_qword_abs(LINELEN, 0)
     k.ret()
 
+    k.label("c_log")
+    k.call_label("dump_log")
+    k.jmp("rc_done")
+
+    k.label("dump_log")                 # print every recorded event, oldest first
+    k.push_r(RBX)
+    k.push_r(R12)
+    k.push_r(R13)
+    k.push_r(R14)
+    k.xor_self(RBX)
+    k.mov_ri(R12, LOG_BASE)
+    k.mov_ri(R13, 0)                    # placeholder, patched below to the name table
+    k.abs_fixups.append((len(k.b) - 8, "evt_tbl"))
+    k.label("dl_loop")
+    k.load_r32_abs(RAX, LOG_COUNT)
+    k.alu("cmp", RBX, RAX)
+    k.jae("dl_done")
+    k.mov_rr(RAX, RBX)
+    k.shl_r64_imm(RAX, 3)
+    k.mov_rr(RCX, R12)                  # -> ring entry
+    k.alu("add", RCX, RAX)
+    k.mov_rr(R14, RCX)                  # keep the entry address
+    k.movzx8(RAX, RCX, 0)               # the stored EVENT ID (not the entry index)
+    k.shl_r64_imm(RAX, 3)
+    k.mov_rr(RCX, R13)                  # -> name table[id]
+    k.alu("add", RCX, RAX)
+    k.ld64(RSI, RCX, 0)
+    k.call_label("puts")
+    k.lea("s_tseg")
+    k.call_label("puts")
+    k.ld32(RDI, R14, 4)                 # tick
+    k.call_label("print_u32")
+    k.lea("s_nl")
+    k.call_label("puts")
+    k.inc_r(RBX)
+    k.jmp("dl_loop")
+    k.label("dl_done")
+    k.pop_r(R14)
+    k.pop_r(R13)
+    k.pop_r(R12)
+    k.pop_r(RBX)
+    k.ret()
+
     k.label("c_help")
+    k.mov_al_imm(8)
+    k.call_label("log_evt")
     k.lea("s_help_text")
     k.call_label("puts")
     k.jmp("rc_done")
 
     k.label("c_ticks")
+    k.mov_al_imm(9)
+    k.call_label("log_evt")
     k.lea("s_ticks_pre")
     k.call_label("puts")
     k.load_r32_abs(RDI, TICKS)
@@ -481,10 +569,14 @@ def build():
     k.jmp("rc_done")
 
     k.label("c_clear")
+    k.mov_al_imm(10)
+    k.call_label("log_evt")
     k.call_label("draw_desktop")
     k.jmp("rc_done")
 
     k.label("c_reboot")
+    k.mov_al_imm(12)
+    k.call_label("log_evt")
     k.lea("s_reboot")
     k.call_label("puts")
     k.mov_dx_imm16(0x64)
@@ -496,6 +588,8 @@ def build():
 
     # ---- shutdown: ACPI FADT -> S5, with a safe halted fallback ----
     k.label("c_shutdown")
+    k.mov_al_imm(11)
+    k.call_label("log_evt")
     k.cli()
     k.mov_r32i(RBX, 0xE0000)         # scan BIOS ROM 0xE0000..0xFFFFF
     k.mov_r32i(R15, 0x100000)
@@ -524,11 +618,15 @@ def build():
     k.jmp("acpi_scan")
 
     k.label("acpi_none")
+    k.mov_al_imm(5)
+    k.call_label("log_evt")         # acpi table missing
     k.lea("s_acpi_none")
     k.call_label("puts")
     k.jmp("shutdown_halt")
 
     k.label("acpi_found")
+    k.mov_al_imm(4)
+    k.call_label("log_evt")         # acpi table found
     k.ld32(R12, RBX, 16)             # RSDT
     k.alu("test", R12, R12)
     k.jnz("acpi_have_rsdt")
@@ -560,6 +658,8 @@ def build():
     k.alu_i("and", R10, 7)
     k.shl_r64_imm(R10, 10)
     k.alu_i("or", R10, 0x2000)       # SLP_EN
+    k.mov_al_imm(6)
+    k.call_label("log_evt")         # S5 issued
     k.lea("s_acpi_ok")
     k.call_label("puts")
     k.mov_r32i(RDX, 0x80)            # ACPI io delay
@@ -573,6 +673,9 @@ def build():
     k.out_dx_al()
 
     k.label("shutdown_halt")
+    k.mov_al_imm(7)
+    k.call_label("log_evt")         # halted
+    k.call_label("dump_log")
     k.lea("s_halted")
     k.call_label("puts")
     k.cli()
@@ -607,7 +710,7 @@ def build():
 
     s("s_banner", "DsOS v0.5  desktop console\r\n")
     s("s_title", " DsOS v0.5  -  keyboard + shell + ACPI  ")
-    s("s_status", " help   ticks   clear   shutdown   reboot ")
+    s("s_status", " help  ticks  clear  log  shutdown  reboot ")
     s("s_tick_lbl", "tick: ")
     s("s_log_idt", "[boot] idt: 256 gates, irq0/irq1 installed\r\n")
     s("s_log_pic", "[boot] pic: remapped to 0x20/0x28, irq0+irq1 unmasked\r\n")
@@ -621,6 +724,7 @@ def build():
       "  help      show this\r\n"
       "  ticks     timer interrupt count\r\n"
       "  clear     clear the screen\r\n"
+      "  log       show the event log\r\n"
       "  shutdown  ACPI power off\r\n"
       "  reboot    reset the machine\r\n")
     s("s_ticks_pre", "ticks=")
@@ -629,10 +733,22 @@ def build():
     s("s_cmd_clear", "clear")
     s("s_cmd_shutdown", "shutdown")
     s("s_cmd_reboot", "reboot")
+    s("s_cmd_log", "log")
+    s("s_tseg", " t=")
     s("s_reboot", "rebooting...\r\n")
     s("s_acpi_ok", "acpi: FADT found, S5 poweroff...\r\n")
     s("s_acpi_none", "acpi: no RSDP found\r\n")
     s("s_halted", "System halted. You can power off now.\r\n")
+
+    k.label("evt_tbl")                  # 14 pointers, patched with abs fixups
+    for _i in range(14):
+        k.emit(b"\x00" * 8)
+        k.abs_fixups.append((len(k.b) - 8, f"s_ev{_i}"))
+    for _i, _t in enumerate(("boot", "idt ok", "pic ok", "keyboard ok",
+                             "acpi table found", "acpi table missing", "S5 issued", "halted",
+                             "cmd help", "cmd ticks", "cmd clear", "cmd shutdown",
+                             "cmd reboot", "cmd unknown")):
+        s(f"s_ev{_i}", _t)
 
     k.label("scancode_map")
     k.emit(bytes(SCAN.get(i, 0) for i in range(128)))

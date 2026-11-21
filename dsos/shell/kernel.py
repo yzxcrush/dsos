@@ -37,6 +37,8 @@ ATTR = 0x5220             # current VGA text attribute (byte)
 SAVE_ROW = 0x5224
 SAVE_COL = 0x5228
 SCROLL_LOCK = 0x522C      # non-zero = do not scroll (status-bar painting)
+LOG_BASE = 0x5300         # event log: 32 entries x 8 bytes (id, pad, tick dword)
+LOG_COUNT = 0x5400        # number of entries recorded (dword)
 CON_TOP = 160             # first console row (row 1)
 CON_BOTTOM = 3680         # last console row (row 23)
 STATUS_ROW = 3840         # row 24

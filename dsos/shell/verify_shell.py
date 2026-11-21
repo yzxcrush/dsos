@@ -300,6 +300,16 @@ def main():
     print(f"[i] console stays inside its region: {'PASS' if ok_console else 'FAIL'}")
     ok_ui = ok_title and ok_status and ok_console
 
+    print("\n--- [j] event log records commands and replays them ---")
+    for ch in "log\n":
+        press4(ch)
+    txt4 = vga_text(uc4)
+    ok_log = ("cmd help" in txt4) and ("cmd ticks" in txt4) and ("boot t=" in txt4)
+    tail = [l for l in txt4.splitlines() if " t=" in l][-6:]
+    for l in tail:
+        print(f"    log: {l}")
+    print(f"[j] event log: {'PASS' if ok_log else 'FAIL'}")
+
     print("\n--- final screen ---")
     print(vga_text(uc)[-500:])
 
@@ -318,7 +328,7 @@ def main():
                 print(f"    LEGACY CHANGED: {name} {got}")
     print(f"[f] archived v0.3 images unchanged: {'PASS' if ok_legacy else 'FAIL'}")
 
-    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll, ok_handoff, ok_ui])
+    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll, ok_handoff, ok_ui, ok_log])
     print(f"\nRESULT: {'PASS' if allok else 'FAIL'}   (irq1 injections: {state['irqs']})")
     open(os.path.join(HERE, "verify_out.txt"), "w", encoding="utf-8").write(vga_text(uc))
     return 0 if allok else 1
