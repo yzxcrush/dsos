@@ -33,6 +33,13 @@ RING_TAIL = 0x5104
 RING_BUF = 0x5110
 TICKS = 0x5200
 IRQFLAG = 0x5210          # set to 1 the first time IRQ1 actually fires
+ATTR = 0x5220             # current VGA text attribute (byte)
+SAVE_ROW = 0x5224
+SAVE_COL = 0x5228
+SCROLL_LOCK = 0x522C      # non-zero = do not scroll (status-bar painting)
+CON_TOP = 160             # first console row (row 1)
+CON_BOTTOM = 3680         # last console row (row 23)
+STATUS_ROW = 3840         # row 24
 VGA_ROW = 0x7F00
 VGA_COL = 0x7F04
 
@@ -337,3 +344,6 @@ class K2(K):
 
     def jae(self, label):
         self.jcc(b"\x83", label)
+
+    def jbe(self, label):
+        self.jcc(b"\x86", label)

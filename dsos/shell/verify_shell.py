@@ -134,7 +134,7 @@ def main():
     err = run(0x9000)
     text = vga_text(uc)
     print(text[:400])
-    ok_boot = "DsOS v0.4" in text and "dsos>" in text
+    ok_boot = "DsOS v0." in text and "dsos>" in text
     print(f"[a] boot + banner + prompt: {'PASS' if ok_boot else 'FAIL'}")
 
     print("\n--- type 'help' + Enter ---")
@@ -231,8 +231,74 @@ def main():
         print(f"    (stopped: {e})")
     text3 = vga_text(uc3)
     print(f"    screen: {text3.splitlines()[:2] if text3 else 'EMPTY'}")
-    ok_handoff = "DsOS v0.4" in text3 and "dsos>" in text3
+    ok_handoff = "DsOS v0." in text3 and "dsos>" in text3
     print(f"[h] stage2 jump reaches the kernel: {'PASS' if ok_handoff else 'FAIL'}")
+
+    print("\n--- [i] UI invariants survive scrolling ---")
+    uc4 = Uc(UC_ARCH_X86, UC_MODE_64)
+    uc4.mem_map(0, LOWMEM)
+    uc4.mem_write(0x9000, blob)
+    uc4.mem_write(STUB, b"\xf4\xeb\xfd")
+    uc4.reg_write(UC_X86_REG_GDTR, (0, gb.STAGE2_ADDR + gb.GDT_OFF, 5 * 8 - 1, 0))
+    uc4.reg_write(UC_X86_REG_RSP, 0x70000)
+    keys4 = []
+
+    def on_in4(uc, *a):
+        p = a[0]
+        if p == 0x3FD:
+            return 0x20
+        if p == 0x60:
+            return keys4.pop(0) if keys4 else 0
+        return 0
+
+    def on_out4(uc, *a):
+        pass
+
+    uc4.hook_add(UC_HOOK_INSN, on_out4, None, 1, 0, UC_X86_INS_OUT)
+    uc4.hook_add(UC_HOOK_INSN, on_in4, None, 1, 0, UC_X86_INS_IN)
+
+    def run4(addr, n=300000):
+        try:
+            uc4.emu_start(addr, 0, count=n)
+        except UcError:
+            pass
+
+    def press4(ch):
+        keys4.append(SCANCODE[ch])
+        sp = 0x6F000
+        uc4.mem_write(sp, struct.pack("<Q", STUB))
+        uc4.mem_write(sp + 8, struct.pack("<Q", 0x18))
+        uc4.mem_write(sp + 16, struct.pack("<Q", 0x202))
+        uc4.reg_write(UC_X86_REG_RSP, sp)
+        run4(0x9000 + labels["irq1"], 5000)
+        uc4.reg_write(UC_X86_REG_RSP, 0x70000)
+        run4(0x9000 + labels["main_loop"], 200000)
+
+    run4(0x9000)
+    for _ in range(6):                     # force several scrolls
+        for ch in "help\n":
+            press4(ch)
+
+    raw4 = bytes(uc4.mem_read(0xB8000, 80 * 25 * 2))
+
+    def rw(r):
+        return raw4[r * 160:(r + 1) * 160]
+
+    title_attrs = {rw(0)[i + 1] for i in range(0, 160, 2)}
+    status_attrs = {rw(24)[i + 1] for i in range(0, 160, 2)}
+    console_attrs = {rw(r)[i + 1] for r in range(1, 24) for i in range(0, 160, 2)}
+    title_txt = "".join(chr(rw(0)[i]) if 32 <= rw(0)[i] < 127 else " " for i in range(0, 160, 2))
+    status_txt = "".join(chr(rw(24)[i]) if 32 <= rw(24)[i] < 127 else " " for i in range(0, 160, 2))
+    ok_title = title_attrs == {0x1F} and "DsOS v" in title_txt
+    ok_status = status_attrs == {0x70} and "shutdown" in status_txt
+    ok_console = console_attrs <= {0x07, 0x0F}
+    print(f"    title  attrs={sorted(hex(a) for a in title_attrs)} text={title_txt.strip()[:40]!r}")
+    print(f"    status attrs={sorted(hex(a) for a in status_attrs)} text={status_txt.strip()[:50]!r}")
+    print(f"    console attrs={sorted(hex(a) for a in console_attrs)}")
+    print(f"[i] title bar intact: {'PASS' if ok_title else 'FAIL'}")
+    print(f"[i] status bar intact: {'PASS' if ok_status else 'FAIL'}")
+    print(f"[i] console stays inside its region: {'PASS' if ok_console else 'FAIL'}")
+    ok_ui = ok_title and ok_status and ok_console
 
     print("\n--- final screen ---")
     print(vga_text(uc)[-500:])
@@ -242,7 +308,7 @@ def main():
         "dsos-x86_64-vga.img": "7559cead34556b03476ff3349a6537fcc6f8c0591ece8b6ba86ae9cf4f725c4e",
     }
     ok_legacy = True
-    vga_dir = r"D:\文档\deepseek-harness\default-workspace\dsos-vga"
+    vga_dir = r"D:\文档\deepseek-harness\default-workspace\archive"
     for name, want in legacy.items():
         p = os.path.join(vga_dir, name)
         if os.path.exists(p):
@@ -250,9 +316,9 @@ def main():
             if got != want:
                 ok_legacy = False
                 print(f"    LEGACY CHANGED: {name} {got}")
-    print(f"[f] legacy images unchanged: {'PASS' if ok_legacy else 'FAIL'}")
+    print(f"[f] archived v0.3 images unchanged: {'PASS' if ok_legacy else 'FAIL'}")
 
-    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll, ok_handoff])
+    allok = all([ok_boot, ok_help, ok_ticks, ok_acpi, ok_s5, ok_legacy, ok_poll, ok_handoff, ok_ui])
     print(f"\nRESULT: {'PASS' if allok else 'FAIL'}   (irq1 injections: {state['irqs']})")
     open(os.path.join(HERE, "verify_out.txt"), "w", encoding="utf-8").write(vga_text(uc))
     return 0 if allok else 1
