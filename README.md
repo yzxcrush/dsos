@@ -5,20 +5,48 @@
 
 ## 状态（请先读这一段，不要跳）
 
+### 已在真机上验证（2026-11-21）
+
 | 能力 | 状态 | 证据 |
 |---|---|---|
-| 产物可复现（字节级） | ✅ **已验证** | `verify/02_check_reproducible.py`：四个生成器重跑后 `syscall.bin` / `syscall.elf` / `bare_serial.bin` / `dsos-x86_64.img` / `dsos-bios.img` / `kernel.bin` 全部 **IDENTICAL** |
-| 46B x86_64 syscall 代码 | ✅ **已执行验证** | `write(1,"DsOS booted.\n",13)` + `exit(0)`，退出码 0 |
-| 16 位 COM1 串口输出 | ✅ **已执行验证** | 14 次 `out 0x3F8`，抓到 `DsOS booted.` |
-| A20 / GDT / 页表 / PAE / EFER / CR0.PG 指令序列 | ✅ **已执行验证** | 执行到 `CR0 = 0x80000011`（PE+PG） |
-| 长模式内核 | ✅ **已执行验证** | 串口输出 `DsOS alive` + `tick: 1..5` 单调递增 |
-| **真实 BIOS → MBR → 长模式完整引导** | ❌ **未验证** | 见下方「未验证」 |
-| Multiboot（`phase1/kernel.bin`） | ❌ **未验证** | 从未被 `-kernel` 加载过 |
-| Shell / 模块加载 / 文件系统 / 进程 / 网络 / GUI | ❌ **未实现** | 空接口 |
+| **真实 BIOS → MBR → 长模式完整启动** | ✅ **真机通过** | 写入 USB（legacy BIOS/CSM），**屏幕出现递增的 tick 数字** |
+| 真实 `int 13h` 磁盘读 | ✅ 真机通过 | stage1 用 CHS 读 8 扇区到 `0x8000`；失败会 `hlt` 停机，不会进内核 |
+| **真实 16 → 32 → 64 位模式切换** | ✅ 真机通过 | 能持续输出 tick 即证明已处于长模式 |
+| A20 / GDT / 页表 / PAE / EFER / `CR0.PG` | ✅ 真机通过 | 同上 |
+| 真实 TSC 驱动的心跳节拍 | ✅ 真机通过 | 数字持续递增 |
+| **VGA 文本输出（`0xB8000`）** | ✅ 真机通过 | 屏幕可见（本仓库新增，`gen_boot.py --vga`） |
 
-**一句话**：代码层面已经"跑起来了"（在 QEMU 的 TCG CPU 核心上逐指令执行并产出正确串口输出），
-但**还没有在真实 BIOS/固件或完整 QEMU 系统模拟下完成一次从引导扇区到长模式的启动**。
-这两件事不能混为一谈——详见 [`docs/P0-VERIFICATION.md`](docs/P0-VERIFICATION.md)。
+### 指令级验证（QEMU TCG 核心 / unicorn，无硬件亦可复跑）
+
+| 能力 | 状态 | 证据 |
+|---|---|---|
+| 产物可复现（字节级） | ✅ 已验证 | `verify/02`：6 个产物全部 **IDENTICAL** |
+| 46B x86_64 syscall 代码 | ✅ 已验证 | `write(1,"DsOS booted.\n",13)` + `exit(0)` |
+| 16 位 COM1 串口输出 | ✅ 已验证 | 14 次 `out 0x3F8`，抓到 `DsOS booted.` |
+| 长模式内核双通道输出 | ✅ 已验证 | 串口与 VGA 均得到 `DsOS alive` + `tick: 1..5` |
+
+### 仍未验证 / 未实现
+
+| 项 | 状态 |
+|---|---|
+| Multiboot（`phase1/kernel.bin` 用 `-kernel` 加载） | ❌ 从未被加载执行 |
+| 真机 COM1 串口输出 | ⚠️ 代码在跑，验证机无串口线，未肉眼确认 |
+| 键盘输入 / 中断（IDT/PIT） | ❌ 未实现 |
+| Shell / 模块加载 / 文件系统 / 进程 / 网络 / GUI | ❌ 未实现 |
+| UEFI 启动路径 | ❌ 不支持（无 GPT / ESP，纯 legacy MBR） |
+
+**一句话**：这张盘在真机上**从 BIOS 引导进了 64 位长模式并跑出了心跳**；但它还不是操作系统——
+无键盘、无 shell、无文件系统。Multiboot 路径与真机串口仍未验证。详见 [`docs/P0-VERIFICATION.md`](docs/P0-VERIFICATION.md)。
+
+## 镜像变体
+
+| 文件 | 输出通道 | 说明 |
+|---|---|---|
+| `dsos-x86_64.img` | **仅 COM1 串口** | 原始版本，hash 保持 `32669f00…` 不变 |
+| `dsos-x86_64-vga.img` | **VGA 屏幕 + COM1 串口** | 新增；没有串口线时用这个，由 `gen_boot.py --vga` 生成 |
+| `dsos-bios.img` | COM1 串口 | 512B 兜底扇区，只打印 `DsOS booted.`（与 `toolchain/step1/bare_serial.bin` 字节相同） |
+
+> `dsos-bios.img` 更正：旧文档称它输出 `DsOS alive` 并递增 tick，**这是错的**——它只输出 `DsOS booted.`，没有心跳。
 
 ## 目录结构
 

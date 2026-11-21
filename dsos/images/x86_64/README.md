@@ -107,3 +107,12 @@ sha256sum dsos-x86_64.img dsos-bios.img
 | 入口 | BIOS MBR，LBA 0 |
 | 依赖 | x86_64 CPU、legacy BIOS、COM1 |
 | 生成器 | `gen_boot.py` |
+
+---
+
+## 9. 更新（2026-11-21）
+
+- 新增 VGA 变体：`python3 gen_boot.py --vga` 会额外生成 `dsos-x86_64-vga.img`（VGA `0xB8000` + COM1 双输出）。
+  默认运行仍然只生成原来的两个文件，**hash 保持不变**（`dsos-x86_64.img` = `32669f00…`）。
+- **真机验证已通过**：VGA 变体写入 USB 后以 legacy BIOS 启动，屏幕出现递增 tick。详见 `docs/P0-VERIFICATION.md` §8。
+- 更正：`dsos-bios.img` 只输出 `DsOS booted.`，**不会**输出 `DsOS alive`、也没有 tick。
