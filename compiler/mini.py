@@ -399,3 +399,147 @@ def _expr(self, n):
 _orig_expr = Backend.expr
 Backend.expr = _expr
 _FNMAP_CACHE = {}
+
+
+# ===========================================================================
+# 阶段④ 第 2 项：结构体（type P { x: i32 }）+ 字段访问（p.x）
+# 设计：不改变标量的 8 字节槽；结构体按 size 预留 ceil(size/8) 个连续槽。
+#       字段地址 = rbp - 8*(first+N-1) + offset      （first 为第一个槽下标）
+# ===========================================================================
+STRUCTS = {}          # name -> {"fields": {fname: (offset, size)}, "size": S}
+_SIZE = {"i8": 1, "u8": 1, "bool": 1, "i16": 2, "u16": 2,
+         "i32": 4, "u32": 4, "i64": 8, "u64": 8, "usize": 8, "isize": 8}
+_ALIGN = {1: 1, 2: 2, 4: 4, 8: 8}
+
+
+def _type_name(tn):
+    n = getattr(tn, "name", None)
+    return n if isinstance(n, str) else None
+
+
+def _build_layouts(items):
+    global STRUCTS
+    STRUCTS = {}
+    for it in items:
+        if type(it).__name__ != "TypeDecl" or getattr(it, "alias", None) is not None:
+            continue
+        off, maxa, fields = 0, 1, {}
+        for fd in (getattr(it, "fields", None) or []):
+            fname = getattr(fd, "name", None)
+            tname = _type_name(getattr(fd, "type", None))
+            size = _SIZE.get(tname, 8)
+            align = _ALIGN.get(size, 8)
+            off = (off + align - 1) // align * align
+            fields[fname] = (off, size)
+            off += size
+            maxa = max(maxa, align)
+        size = (off + maxa - 1) // maxa * maxa
+        STRUCTS[it.name] = {"fields": fields, "size": size}
+
+
+def _fld_addr(self, name, fname):
+    """返回 [rbp+disp] 的 disp（字段相对 rbp 的偏移）"""
+    first, N, lay = self.svars[name]
+    off, size = lay["fields"][fname]
+    return -8 * (first + N - 1) + off, size
+
+
+def _expr2(self, n):
+    if type(n).__name__ == "AttrExpr":
+        obj = getattr(n, "obj", None)
+        if type(obj).__name__ == "Var" and obj.name in getattr(self, "svars", {}):
+            disp, size = _fld_addr(self, obj.name, n.name)
+            if size == 8:
+                self.e.e(b"\x48\x8b\x45" + struct.pack("<b", disp))
+            else:
+                self.e.e(b"\x8b\x45" + struct.pack("<b", disp))      # mov eax,[rbp+d]
+            return
+        raise NotImplementedError("field access on non-struct")
+    return _orig_expr2(self, n)
+
+
+def _stmt2(self, n, tag):
+    t = type(n).__name__
+    if t == "LetStmt" and getattr(self, "svars", None) is not None:
+        tname = _type_name(getattr(n, "type", None))
+        if tname in STRUCTS:
+            lay = STRUCTS[tname]
+            N = (lay["size"] + 7) // 8
+            first = self.nslots + 1
+            self.nslots += N
+            self.svars[n.name] = (first, N, lay)
+            return
+    if t == "AssignStmt" and type(getattr(n, "target", None)).__name__ == "AttrExpr":
+        tgt = n.target
+        obj = getattr(tgt, "obj", None)
+        if type(obj).__name__ == "Var" and obj.name in getattr(self, "svars", {}):
+            disp, size = _fld_addr(self, obj.name, tgt.name)
+            self.expr(n.value)
+            if size == 8:
+                self.e.e(b"\x48\x89\x45" + struct.pack("<b", disp))
+            else:
+                self.e.e(b"\x89\x45" + struct.pack("<b", disp))      # mov [rbp+d],eax
+            return
+    return _orig_stmt2(self, n, tag)
+
+
+_orig_expr2 = Backend.expr
+_orig_stmt2 = Backend.stmt
+Backend.expr = _expr2
+Backend.stmt = _stmt2
+Backend.svars = {}
+
+
+def compile_source(src, units=1, target="linux"):   # noqa: F811
+    prog = parse_program(src)
+    items = prog.items if hasattr(prog, "items") else prog
+    _build_layouts(items)
+    fns = [it for it in items if type(it).__name__ == "FnDecl"]
+    fnmap = {f.name: f for f in fns}
+    if "_start" not in fnmap:
+        raise NameError("no _start")
+    global _FNMAP_CACHE
+    _FNMAP_CACHE = fnmap
+
+    e = Emit()
+    order = ["_start"] + [f.name for f in fns if f.name != "_start"]
+    for fname in order:
+        fn = fnmap[fname]
+        be = Backend(target)
+        be.e = e
+        be.fn = fn
+        be.ep = f".ep_{fname}"
+        be.svars = {}
+        e.label("fn_" + fname)
+        e.e(b"\x55")
+        e.e(b"\x48\x89\xe5")
+        params = getattr(fn, "params", []) or []
+        for p in params:
+            nm = getattr(p, "name", None) or (p[0] if isinstance(p, (list, tuple)) else None)
+            be.slot(nm)
+        body = block_items(fn.body)
+        for st in body:
+            if type(st).__name__ == "LetStmt":
+                tname = _type_name(getattr(st, "type", None))
+                if tname in STRUCTS:
+                    lay = STRUCTS[tname]
+                    N = (lay["size"] + 7) // 8
+                    first = be.nslots + 1
+                    be.nslots += N
+                    be.svars[st.name] = (first, N, lay)
+                else:
+                    be.slot(st.name)
+        frame = (be.nslots * 8 + 15) // 16 * 16
+        if frame:
+            e.e(b"\x48\x81\xec" + struct.pack("<I", frame))
+        for i in range(len(params)):
+            nm = getattr(params[i], "name", None) or params[i][0]
+            e.e(ARG_REGS[i] + struct.pack("<b", be.slots[nm]))
+        for i, st in enumerate(body):
+            be.stmt(st, i)
+        e.label(be.ep)
+        if frame:
+            e.e(b"\x48\x81\xc4" + struct.pack("<I", frame))
+        e.e(b"\x5d")
+        e.e(b"\xc3")
+    return e.finish()

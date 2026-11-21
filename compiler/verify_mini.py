@@ -56,6 +56,16 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("结构体字段读写", """
+type P { x: i32, y: i32 }
+fn _start() {
+    let p: P
+    p.x = 7
+    p.y = 35
+    sys_exit(p.x + p.y)
+}
+""", 42),
+
     ("用户函数调用", """
 fn add(a: i32, b: i32) -> i32 {
     return a + b
