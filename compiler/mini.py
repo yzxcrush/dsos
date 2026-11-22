@@ -45,15 +45,22 @@ class Emit:
         self.rel(b"\x0f" + cc, label)
 
     def add_string(self, text: str) -> str:
-        label = f".str{len(self.data_labels)}"
+        return self.add_data(text.encode("utf-8") + b"\x00")
+
+    def add_data(self, blob: bytes) -> str:
+        label = f".dat{len(self.data_labels)}"
         self.data_labels[label] = len(self.data)
-        self.data += text.encode("utf-8")
+        self.data += blob
         return label
 
     def lea_rip(self, reg, label):
         """lea reg, [rip+disp32]  — 目标可以是代码标签或 .rodata 标签"""
-        assert reg == 6, "this slice only supports rsi"
-        self.e(b"\x48\x8d\x35")
+        if reg == 6:
+            self.e(b"\x48\x8d\x35")
+        elif reg == 0:
+            self.e(b"\x48\x8d\x05")
+        else:
+            raise NotImplementedError(f"lea_rip reg {reg}")
         at = len(self.b)
         self.e(b"\x00\x00\x00\x00")
         self.fix.append((at, label))
@@ -136,11 +143,21 @@ class Backend:
         if t == "Lit":
             v = getattr(n, "value", None)
             if isinstance(v, str):
-                # 字符串只作为 p() 的实参使用（本切片不做字符串值运算）
-                raise NotImplementedError("string literal only allowed as p(...) argument")
+                label = self.e.add_string(v)
+                self.e.lea_rip(0, label)          # lea rax, [rip+str]
+                return
             if not isinstance(v, int):
                 raise NotImplementedError(f"literal not int: {v!r}")
             self.e.e(enc_mov_rax_imm(v))
+        elif t == "ArrayLit":
+            items = getattr(n, "items", None) or getattr(n, "elements", None) or []
+            data = b""
+            for it in items:
+                if type(it).__name__ != "Lit" or not isinstance(getattr(it, "value", None), int):
+                    raise NotImplementedError("array literal: only int elements in this slice")
+                data += struct.pack("<Q", getattr(it, "value", 0))
+            label = self.e.add_data(data)
+            self.e.lea_rip(0, label)              # lea rax, [rip+array]
         elif t == "Var":
             self.e.e(enc_load_rax(self.slot(n.name, alloc=False)))
         elif t == "Binary":

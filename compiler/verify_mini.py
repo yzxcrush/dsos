@@ -56,6 +56,20 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("数组字面量 + 下标", """
+fn _start() {
+    let a = [10, 20, 30]
+    sys_exit(a[1])
+}
+""", 20),
+
+    ("字符串值（非空地址）", """
+fn _start() {
+    let s = "Hi"
+    if s != 0 { sys_exit(1) } else { sys_exit(0) }
+}
+""", 1),
+
     ("match 字面量命中", """
 fn _start() {
     let x = 3
