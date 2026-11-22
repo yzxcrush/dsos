@@ -192,6 +192,18 @@ class Backend:
                 self.e.e(b"\x48\xf7\xd8")     # neg rax
             else:
                 raise NotImplementedError(f"unary {op}")
+        elif t == "Cast":
+            self.expr(n.expr)
+            ty = getattr(getattr(n, "type", None), "name", None)
+            CAST = {"u8": b"\x0f\xb6\xc0", "i8": b"\x0f\xbe\xc0",
+                    "u16": b"\x0f\xb7\xc0", "i16": b"\x0f\xbf\xc0",
+                    "u32": b"\x89\xc0", "i32": b"\x48\x63\xc0"}
+            if ty in CAST:
+                self.e.e(CAST[ty])
+            elif ty in ("u64", "i64", "usize", "isize"):
+                pass
+            else:
+                raise NotImplementedError(f"cast to {ty}")
         elif t == "MatchExpr":
             self.match_expr(n)
         elif t == "Index":
@@ -200,6 +212,23 @@ class Backend:
         elif t == "Call":
             fn = getattr(n, "fn", None)
             name = getattr(fn, "name", None)
+            # ---- 窄 load：load8/16/32/64(addr) -> 值（零扩展） ----
+            LOAD = {"load8": b"\x0f\xb6\x00", "load16": b"\x0f\xb7\x00",
+                    "load32": b"\x8b\x00", "load64": b"\x48\x8b\x00"}
+            if name in LOAD:
+                self.expr(n.args[0])          # rax = addr
+                self.e.e(LOAD[name])
+                return
+            # ---- 窄 store：store8/16/32/64(addr, value) ----
+            STORE = {"store8": b"\x88\x10", "store16": b"\x66\x89\x10",
+                     "store32": b"\x89\x10", "store64": b"\x48\x89\x10"}
+            if name in STORE:
+                self.expr(n.args[1])          # value
+                self.e.e(b"\x50")             # push value
+                self.expr(n.args[0])          # addr
+                self.e.e(b"\x5a")             # pop rdx (value)
+                self.e.e(STORE[name])         # mov [rax], <rdx 窄>
+                return
             if name == "out8":
                 self.expr(n.args[1])          # value
                 self.e.e(b"\x50")             # push value

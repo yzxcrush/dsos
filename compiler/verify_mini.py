@@ -56,6 +56,22 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("as 截断 u8", """
+fn _start() {
+    let x = 300
+    let y = x as u8
+    sys_exit(y)
+}
+""", 44),
+
+    ("窄 store8/load8", """
+fn _start() {
+    store8(12288, 65)
+    let x = load8(12288)
+    sys_exit(x)
+}
+""", 65),
+
     ("数组字面量 + 下标", """
 fn _start() {
     let a = [10, 20, 30]
