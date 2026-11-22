@@ -170,6 +170,13 @@ class Backend:
                 self.e.e(BINOPS[op])
             elif op in BITOPS:
                 self.e.e(BITOPS[op])
+            elif op in ("&&", "||"):
+                # rbx=left, rax=right；非短路求值（本切片无副作用，语义等价）
+                self.e.e(b"\x48\x85\xdb")                 # test rbx, rbx
+                self.e.e(b"\x0f\x95\xc3")                 # setne bl
+                self.e.e(b"\x48\x85\xc0")                 # test rax, rax
+                self.e.e(b"\x0f\x95\xc0")                 # setne al
+                self.e.e(b"\x48\x21\xd8" if op == "&&" else b"\x48\x09\xd8")
             elif op in ("<<", ">>"):
                 # rbx = left, rax = right(count) -> rcx=count, rax=left, shift
                 self.e.e(b"\x48\x89\xc1")                 # mov rcx, rax
@@ -190,6 +197,11 @@ class Backend:
             elif op == "-":
                 self.expr(opr)
                 self.e.e(b"\x48\xf7\xd8")     # neg rax
+            elif op == "!":
+                self.expr(opr)
+                self.e.e(b"\x48\x85\xc0")     # test rax, rax
+                self.e.e(b"\x0f\x94\xc0")     # sete al
+                self.e.e(b"\x0f\xb6\xc0")     # movzx eax, al
             else:
                 raise NotImplementedError(f"unary {op}")
         elif t == "Cast":

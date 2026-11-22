@@ -56,6 +56,34 @@ fn _start() {
 }
 """, 0, b"DsOS alive"),
 
+    ("逻辑 && ", """
+fn _start() {
+    let a = 1
+    let b = 0
+    let r = 0
+    if a == 1 && b == 0 { r = 42 } else { r = 7 }
+    sys_exit(r)
+}
+""", 42),
+
+    ("字符串扫描器（mini 编译器雏形）", """
+fn is_digit(c: i32) -> i32 {
+    if c >= 48 { if c <= 57 { return 1 } }
+    return 0
+}
+fn _start() {
+    let s = "12+34"
+    let i = 0
+    let n = 0
+    while load8(s + i) != 0 {
+        let c = load8(s + i)
+        if is_digit(c) == 1 { n = n * 10 + (c - 48) }
+        i = i + 1
+    }
+    sys_exit(n)
+}
+""", 1234),
+
     ("as 截断 u8", """
 fn _start() {
     let x = 300
