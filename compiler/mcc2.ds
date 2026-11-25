@@ -1,0 +1,191 @@
+// mcc2.ds — Ds 写的"带变量的表达式编译器"（⑤ 第四圈）
+//
+// 与 mcc.ds 的区别：不再常量折叠，而是发出完整指令序列。
+//   let a = 5
+//   a + 3
+// 编译成：
+//   55                       push rbp
+//   48 89 e5                 mov rbp, rsp
+//   48 81 ec 20 00 00 00     sub rsp, 32
+//   b8 05 00 00 00           mov eax, 5
+//   89 45 fc                 mov [rbp-4], eax
+//   8b 45 fc                 mov eax, [rbp-4]
+//   50                       push rax
+//   b8 03 00 00 00           mov eax, 3
+//   5b                       pop rbx
+//   01 d8                    add eax, ebx
+//   48 89 ec 5d c3           mov rsp,rbp ; pop rbp ; ret
+//
+// 内存布局：
+//   0x3000 源码位置   0x3008 代码长度   0x3140 符号数
+//   0x3100 符号名字节  0x3120 符号槽偏移   0x6000 代码缓冲
+
+fn peek(s: *u8) -> i32 {
+    return load8(s + load32(12288))
+}
+
+fn advance() -> i32 {
+    store32(12288, load32(12288) + 1)
+    return 0
+}
+
+fn skip(s: *u8) -> i32 {
+    while peek(s) == 32 { advance() }
+    return 0
+}
+
+// ---- 代码发射 ----
+fn emit(b: i32) -> i32 {
+    store8(24576 + load32(12296), b)
+    store32(12296, load32(12296) + 1)
+    return 0
+}
+
+fn emit32(v: i32) -> i32 {
+    emit(v as u8)
+    emit((v >> 8) as u8)
+    emit((v >> 16) as u8)
+    emit((v >> 24) as u8)
+    return 0
+}
+
+// ---- 符号表 ----
+fn sym_set(ch: i32, off: i32) -> i32 {
+    let n = load32(12608)
+    store8(12544 + n, ch)
+    store32(12576 + n * 4, off)
+    store32(12608, n + 1)
+    return 0
+}
+
+fn sym_get(ch: i32) -> i32 {
+    let n = load32(12608)
+    let i = 0
+    while i < n {
+        if load8(12544 + i) == ch { return load32(12576 + i * 4) }
+        i = i + 1
+    }
+    return 0
+}
+
+fn is_digit(c: i32) -> i32 {
+    if c >= 48 { if c <= 57 { return 1 } }
+    return 0
+}
+
+fn number(s: *u8) -> i32 {
+    let n = 0
+    while is_digit(peek(s)) == 1 {
+        n = n * 10 + (peek(s) - 48)
+        advance()
+    }
+    return n
+}
+
+// ---- 表达式：factor (('+'|'-') factor)* ----
+fn emit_factor(s: *u8) -> i32 {
+    skip(s)
+    let c = peek(s)
+    if is_digit(c) == 1 {
+        let n = number(s)
+        emit(184)                 // b8  mov eax, imm32
+        emit32(n)
+        return 0
+    }
+    advance()                     // 单字符变量名
+    let off = sym_get(c)
+    emit(139)                     // 8b  mov eax, [rbp+disp8]
+    emit(69)
+    emit(off)
+    return 0
+}
+
+fn emit_expr(s: *u8) -> i32 {
+    emit_factor(s)
+    skip(s)
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 {
+        let op = peek(s)
+        advance()
+        skip(s)
+        emit(80)                  // push rax
+        emit_factor(s)
+        emit(91)                  // pop rbx
+        if op == 43 {
+            emit(1)               // add eax, ebx
+            emit(216)
+        } else {
+            if op == 42 {
+                emit(15)          // imul eax, ebx
+                emit(175)
+                emit(195)
+            } else {
+                emit(41)          // sub ebx, eax
+                emit(195)
+                emit(137)         // mov eax, ebx
+                emit(216)
+            }
+        }
+        skip(s)
+    }
+    return 0
+}
+
+// ---- 语句：let <ch> = <num> | <expr> ----
+fn emit_stmt(s: *u8) -> i32 {
+    skip(s)
+    if peek(s) == 108 {           // 'l' of "let"
+        advance()
+        advance()
+        advance()
+        advance()
+        skip(s)
+        let name = peek(s)
+        advance()
+        skip(s)
+        advance()                 // '='
+        skip(s)
+        let n = number(s)
+        let slot = 0 - (4 * (load32(12608) + 1))
+        sym_set(name, slot)
+        emit(184)                 // mov eax, n
+        emit32(n)
+        emit(137)                 // mov [rbp+slot], eax
+        emit(69)
+        emit(slot)
+        return 0
+    }
+    emit_expr(s)
+    return 0
+}
+
+fn _start() {
+    store32(12288, 0)
+    store32(12296, 0)
+    store32(12608, 0)
+
+    // prologue
+    emit(85)                      // push rbp
+    emit(72)
+    emit(137)
+    emit(229)                     // mov rbp, rsp
+    emit(72)
+    emit(129)
+    emit(236)
+    emit32(32)                    // sub rsp, 32
+
+    let s = 28672                // 0x7000：源码缓冲由宿主（验收器）填入
+    while peek(s) != 0 {
+        emit_stmt(s)
+        skip(s)
+    }
+
+    // epilogue
+    emit(72)
+    emit(137)
+    emit(236)                     // mov rsp, rbp
+    emit(93)                      // pop rbp
+    emit(195)                     // ret
+
+    if load8(28672) == 64 { sys_exit(load32(12296)) }
+    sys_exit(run(24576))
+}

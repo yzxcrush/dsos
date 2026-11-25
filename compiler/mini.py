@@ -121,6 +121,8 @@ class Backend:
         self.slots = {}          # name -> rbp offset (negative)
         self.nslots = 0
         self.scratch_i = 0       # 已用的临时槽计数
+        self.fn_name = "f"       # 当前函数名（标签前缀，避免跨函数撞名）
+        self.label_n = 0
 
     def temp(self):
         """临时槽：位于已声明局部变量之下（更负），共 SCRATCH 个。返回 rbp 位移。"""
@@ -349,9 +351,8 @@ class Backend:
             self.expr(body)
 
     def new_label(self, prefix):
-        n = getattr(self, "_label_n", 0) + 1
-        self._label_n = n
-        return f".{prefix}_{n}"
+        self.label_n += 1
+        return f".{self.fn_name}_{prefix}_{self.label_n}"
 
     def addr_of(self, n):
         """Index: rax = base + index * 8"""
@@ -364,18 +365,20 @@ class Backend:
 
     def if_stmt(self, n, tag):
         """if 当语句用：条件 → 两臂 → 结束标签。"""
+        l_else = self.new_label("ielse")
+        l_end = self.new_label("iend")
         self.expr(n.cond)
         self.e.e(b"\x48\x85\xc0")              # test rax, rax
-        self.e.jcc(b"\x84", f"if_else_{tag}")
+        self.e.jcc(b"\x84", l_else)
         for st in block_items(n.then_block):
-            self.stmt(st, f"{tag}t")
-        self.e.jmp(f"if_end_{tag}")
-        self.e.label(f"if_else_{tag}")
+            self.stmt(st, tag)
+        self.e.jmp(l_end)
+        self.e.label(l_else)
         other = getattr(n, "else_", None)
         if other is not None:
             for st in block_items(other):
-                self.stmt(st, f"{tag}e")
-        self.e.label(f"if_end_{tag}")
+                self.stmt(st, tag)
+        self.e.label(l_end)
 
     # ---- 语句 ----
     def stmt(self, n, tag):
@@ -397,14 +400,16 @@ class Backend:
             else:
                 raise NotImplementedError(f"assign target {tgt}")
         elif t == "WhileStmt":
-            self.e.label(f"w_cond_{tag}")
+            l_cond = self.new_label("wcond")
+            l_end = self.new_label("wend")
+            self.e.label(l_cond)
             self.expr(n.cond)
             self.e.e(b"\x48\x85\xc0")         # test rax, rax
-            self.e.jcc(b"\x84", f"w_end_{tag}")   # jz
-            for s in block_items(n.body):
-                self.stmt(s, tag)
-            self.e.jmp(f"w_cond_{tag}")
-            self.e.label(f"w_end_{tag}")
+            self.e.jcc(b"\x84", l_end)           # jz
+            for st2 in block_items(n.body):
+                self.stmt(st2, tag)
+            self.e.jmp(l_cond)
+            self.e.label(l_end)
         elif t == "IfExpr":
             self.if_stmt(n, tag)
         elif t == "ExprStmt":
@@ -497,6 +502,7 @@ def compile_source(src, units=1, target="linux"):   # noqa: F811
         be.e = e
         be.fn = fn
         be.ep = f".ep_{fname}"
+        be.fn_name = fname
         e.label("fn_" + fname)
         e.e(b"\x55")                  # push rbp
         e.e(b"\x48\x89\xe5")        # mov rbp, rsp
@@ -557,7 +563,8 @@ def _expr(self, n):
             for a in args:
                 self.expr(a)
                 self.e.e(b"\x50")             # push arg
-            for reg in (b"\x5f", b"\x5e", b"\x5a")[:len(args)]:   # pop rdi/rsi/rdx
+            # 栈顶是最后一个实参，必须逆序弹出到 rdi/rsi/rdx
+            for reg in list((b"\x5f", b"\x5e", b"\x5a")[:len(args)])[::-1]:
                 self.e.e(reg)
             self.e.call("fn_" + name)
             return
@@ -578,6 +585,32 @@ STRUCTS = {}          # name -> {"fields": {fname: (offset, size)}, "size": S}
 _SIZE = {"i8": 1, "u8": 1, "bool": 1, "i16": 2, "u16": 2,
          "i32": 4, "u32": 4, "i64": 8, "u64": 8, "usize": 8, "isize": 8}
 _ALIGN = {1: 1, 2: 2, 4: 4, 8: 8}
+
+
+def prescan_lets(be, node, seen_fn=None):
+    """递归收集函数体内所有 LetStmt（含 if/while/match 内部），为其分配栈槽。"""
+    t = type(node).__name__
+    if t == "FnDecl":
+        return                      # 不进入其他函数
+    if t == "LetStmt":
+        tname = _type_name(getattr(node, "type", None))
+        if tname in STRUCTS:
+            lay = STRUCTS[tname]
+            N = (lay["size"] + 7) // 8
+            first = be.nslots + 1
+            be.nslots += N
+            be.svars[node.name] = (first, N, lay)
+        else:
+            be.slot(node.name)
+        return
+    for f in getattr(node, "__dataclass_fields__", {}):
+        v = getattr(node, f, None)
+        if hasattr(v, "__dataclass_fields__"):
+            prescan_lets(be, v)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                if hasattr(x, "__dataclass_fields__"):
+                    prescan_lets(be, x)
 
 
 def _type_name(tn):
@@ -677,6 +710,7 @@ def compile_source(src, units=1, target="linux"):   # noqa: F811
         be.e = e
         be.fn = fn
         be.ep = f".ep_{fname}"
+        be.fn_name = fname
         be.svars = {}
         e.label("fn_" + fname)
         e.e(b"\x55")
@@ -687,16 +721,7 @@ def compile_source(src, units=1, target="linux"):   # noqa: F811
             be.slot(nm)
         body = block_items(fn.body)
         for st in body:
-            if type(st).__name__ == "LetStmt":
-                tname = _type_name(getattr(st, "type", None))
-                if tname in STRUCTS:
-                    lay = STRUCTS[tname]
-                    N = (lay["size"] + 7) // 8
-                    first = be.nslots + 1
-                    be.nslots += N
-                    be.svars[st.name] = (first, N, lay)
-                else:
-                    be.slot(st.name)
+            prescan_lets(be, st)
         frame = ((be.nslots + SCRATCH) * 8 + 15) // 16 * 16
         if frame:
             e.e(b"\x48\x81\xec" + struct.pack("<I", frame))
