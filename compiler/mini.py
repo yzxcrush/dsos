@@ -241,6 +241,11 @@ class Backend:
                 self.e.e(b"\x5a")             # pop rdx (value)
                 self.e.e(STORE[name])         # mov [rax], <rdx 窄>
                 return
+            if name == "run":
+                # 跳到运行时生成的代码：call rax；返回值留在 rax
+                self.expr(n.args[0])          # rax = addr
+                self.e.e(b"\xff\xd0")         # call rax
+                return
             if name == "out8":
                 self.expr(n.args[1])          # value
                 self.e.e(b"\x50")             # push value
