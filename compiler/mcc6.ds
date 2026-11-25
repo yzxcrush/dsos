@@ -1,0 +1,341 @@
+// mcc6.ds — 带函数定义与调用的 Ds 编译器（⑤ 第八圈）
+// 新增：fn <name>(<p1>,<p2>) { ... }  定义；<name>(<a>,<b>) 调用（支持前向调用）
+// 函数返回值 = 尾声时的 eax（最后一条赋值的结果）
+// 内存新增：0x3300 调用修复表哈希 / 0x3380 位置 / 0x3400 计数
+//          0x3500 函数表哈希 / 0x3580 偏移 / 0x3600 计数
+
+fn peek(s: *u8) -> i32 { return load8(s + load32(12288)) }
+fn peek_at(s: *u8, k: i32) -> i32 { return load8(s + load32(12288) + k) }
+fn advance() -> i32 { store32(12288, load32(12288) + 1)  return 0 }
+fn skip(s: *u8) -> i32 { while peek(s) == 32 { advance() }  return 0 }
+fn emit(b: i32) -> i32 { store8(24576 + load32(12296), b)  store32(12296, load32(12296) + 1)  return 0 }
+fn emit32(v: i32) -> i32 { emit(v as u8)  emit((v >> 8) as u8)  emit((v >> 16) as u8)  emit((v >> 24) as u8)  return 0 }
+
+fn is_digit(c: i32) -> i32 { if c >= 48 { if c <= 57 { return 1 } }  return 0 }
+fn is_alpha(c: i32) -> i32 { if c >= 97 { if c <= 122 { return 1 } }  return 0 }
+fn is_ident(c: i32) -> i32 {
+    if is_alpha(c) == 1 { return 1 }
+    if is_digit(c) == 1 { return 1 }
+    if c == 95 { return 1 }
+    return 0
+}
+
+fn hash_ident(s: *u8) -> i32 {
+    let hh = 0
+    let p = load32(12288)
+    while is_ident(load8(s + p)) == 1 { hh = hh * 33 + load8(s + p)  p = p + 1 }
+    return hh & 65535
+}
+
+fn ident_len(s: *u8) -> i32 {
+    let n = 0
+    let p = load32(12288)
+    while is_ident(load8(s + p)) == 1 { n = n + 1  p = p + 1 }
+    return n
+}
+
+fn skip_ident(s: *u8) -> i32 {
+    let n = ident_len(s)
+    let i = 0
+    while i < n { advance()  i = i + 1 }
+    return 0
+}
+
+// ---- 变量符号表 ----
+fn sym_set(hh: i32, off: i32) -> i32 {
+    let n = load32(12832)
+    store32(12576 + n * 4, hh)
+    store32(12704 + n * 4, off)
+    store32(12832, n + 1)
+    return 0
+}
+fn sym_get(hh: i32) -> i32 {
+    let n = load32(12832)
+    let i = 0
+    while i < n {
+        if load32(12576 + i * 4) == hh { return load32(12704 + i * 4) }
+        i = i + 1
+    }
+    return 0
+}
+
+// ---- 函数表 ----
+fn fn_set(hh: i32, off: i32) -> i32 {
+    let n = load32(13824)
+    store32(13568 + n * 4, hh)
+    store32(13696 + n * 4, off)
+    store32(13824, n + 1)
+    return 0
+}
+fn fn_get(hh: i32) -> i32 {
+    let n = load32(13824)
+    let i = 0
+    while i < n {
+        if load32(13568 + i * 4) == hh { return load32(13696 + i * 4) }
+        i = i + 1
+    }
+    return 0
+}
+
+// ---- 调用修复表 ----
+fn fix_add(hh: i32, pos: i32) -> i32 {
+    let n = load32(13312)
+    store32(13056 + n * 4, hh)
+    store32(13184 + n * 4, pos)
+    store32(13312, n + 1)
+    return 0
+}
+fn resolve_calls() -> i32 {
+    let n = load32(13312)
+    let i = 0
+    while i < n {
+        let hh = load32(13056 + i * 4)
+        let pos = load32(13184 + i * 4)
+        let target = fn_get(hh)
+        let disp = target - (pos + 4)
+        store8(24576 + pos, disp as u8)
+        store8(24576 + pos + 1, (disp >> 8) as u8)
+        store8(24576 + pos + 2, (disp >> 16) as u8)
+        store8(24576 + pos + 3, (disp >> 24) as u8)
+        i = i + 1
+    }
+    return 0
+}
+
+fn number(s: *u8) -> i32 {
+    let n = 0
+    while is_digit(peek(s)) == 1 { n = n * 10 + (peek(s) - 48)  advance() }
+    return n
+}
+
+fn emit_call(s: *u8) -> i32 {
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    let nargs = 0
+    skip(s)
+    while peek(s) != 41 {
+        emit_expr(s)
+        emit(80)
+        nargs = nargs + 1
+        skip(s)
+        if peek(s) == 44 { advance()  skip(s) }
+    }
+    advance()
+    if nargs >= 2 { emit(94) }
+    if nargs >= 1 { emit(95) }
+    emit(232)
+    let pos = load32(12296)
+    emit(0)  emit(0)  emit(0)  emit(0)
+    fix_add(hh, pos)
+    return 0
+}
+
+fn emit_factor(s: *u8) -> i32 {
+    skip(s)
+    let c = peek(s)
+    if is_digit(c) == 1 { let n = number(s)  emit(184)  emit32(n)  return 0 }
+    let hh = hash_ident(s)
+    let ln = ident_len(s)
+    if peek_at(s, ln) == 40 { return emit_call(s) }
+    skip_ident(s)
+    emit(139)
+    emit(69)
+    emit(sym_get(hh))
+    return 0
+}
+
+fn emit_expr(s: *u8) -> i32 {
+    emit_factor(s)
+    skip(s)
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 {
+        let op = peek(s)
+        advance()
+        skip(s)
+        emit(80)
+        emit_factor(s)
+        emit(91)
+        if op == 43 { emit(1)  emit(216) } else {
+            if op == 42 { emit(15)  emit(175)  emit(195) } else {
+                emit(41)  emit(195)  emit(137)  emit(216)
+            }
+        }
+        skip(s)
+    }
+    return 0
+}
+
+fn emit_let(s: *u8) -> i32 {
+    skip_ident(s)
+    skip(s)
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    skip(s)
+    if is_digit(peek(s)) == 1 {
+        let n = number(s)
+        let slot = 0 - (4 * (load32(12832) + 1))
+        sym_set(hh, slot)
+        emit(184)  emit32(n)  emit(137)  emit(69)  emit(slot)
+        return 0
+    }
+    let slot2 = 0 - (4 * (load32(12832) + 1))
+    sym_set(hh, slot2)
+    emit_expr(s)
+    emit(137)  emit(69)  emit(slot2)
+    return 0
+}
+
+fn emit_assign(s: *u8) -> i32 {
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    skip(s)
+    emit_expr(s)
+    emit(137)
+    emit(69)
+    emit(sym_get(hh))
+    return 0
+}
+
+fn emit_if(s: *u8) -> i32 {
+    skip_ident(s)
+    skip(s)
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    skip(s)
+    let rhs_is_num = is_digit(peek(s))
+    let rhs_val = 0
+    let rhs_hash = 0
+    if rhs_is_num == 1 { rhs_val = number(s) } else { rhs_hash = hash_ident(s)  skip_ident(s) }
+    skip(s)
+    advance()
+    emit(139)  emit(69)  emit(sym_get(hh))
+    if rhs_is_num == 1 { emit(61)  emit32(rhs_val) } else { emit(59)  emit(69)  emit(sym_get(rhs_hash)) }
+    emit(125)
+    let jge_pos = load32(12296)
+    emit(0)
+    while peek(s) != 125 { emit_stmt(s)  skip(s) }
+    advance()
+    let target = load32(12296)
+    store8(24576 + jge_pos, (target - (jge_pos + 1)) as u8)
+    return 0
+}
+
+fn emit_while(s: *u8) -> i32 {
+    skip_ident(s)
+    skip(s)
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    skip(s)
+    let rhs_is_num = is_digit(peek(s))
+    let rhs_val = 0
+    let rhs_hash = 0
+    if rhs_is_num == 1 { rhs_val = number(s) } else { rhs_hash = hash_ident(s)  skip_ident(s) }
+    skip(s)
+    advance()
+    let cond_pos = load32(12296)
+    emit(139)  emit(69)  emit(sym_get(hh))
+    if rhs_is_num == 1 { emit(61)  emit32(rhs_val) } else { emit(59)  emit(69)  emit(sym_get(rhs_hash)) }
+    emit(125)
+    let jge_pos = load32(12296)
+    emit(0)
+    while peek(s) != 125 { emit_stmt(s)  skip(s) }
+    advance()
+    emit(235)
+    let jmp_pos = load32(12296)
+    emit((cond_pos - (jmp_pos + 1)) as u8)
+    let target = load32(12296)
+    store8(24576 + jge_pos, (target - (jge_pos + 1)) as u8)
+    return 0
+}
+
+fn emit_fn(s: *u8) -> i32 {
+    skip_ident(s)
+    skip(s)
+    let hh = hash_ident(s)
+    skip_ident(s)
+    skip(s)
+    advance()
+    let nparams = 0
+    skip(s)
+    while peek(s) != 41 {
+        let ph = hash_ident(s)
+        skip_ident(s)
+        let pslot = 0 - (4 * (nparams + 1))
+        sym_set(ph, pslot)
+        nparams = nparams + 1
+        skip(s)
+        if peek(s) == 44 { advance()  skip(s) }
+    }
+    advance()
+    skip(s)
+    advance()
+    // 顶层顺序执行时不能掉进函数体：先发 jmp rel32 跳过，函数末尾回填
+    emit(233)
+    let jmp_over = load32(12296)
+    emit(0)  emit(0)  emit(0)  emit(0)
+    let fn_off = load32(12296)
+    fn_set(hh, fn_off)
+    emit(85)
+    emit(72)  emit(137)  emit(229)
+    emit(72)  emit(129)  emit(236)  emit32(64)
+    // 参数槽是 4 字节，必须用 32 位存（48 前缀会写成 8 字节，覆盖保存的 rbp）
+    if nparams >= 1 { emit(137)  emit(125)  emit(252) }
+    if nparams >= 2 { emit(137)  emit(117)  emit(248) }
+    while peek(s) != 125 { emit_stmt(s)  skip(s) }
+    advance()
+    emit(72)  emit(137)  emit(236)
+    emit(93)
+    emit(195)
+    let after = load32(12296)
+    let d = after - (jmp_over + 4)
+    store8(24576 + jmp_over, d as u8)
+    store8(24576 + jmp_over + 1, (d >> 8) as u8)
+    store8(24576 + jmp_over + 2, (d >> 16) as u8)
+    store8(24576 + jmp_over + 3, (d >> 24) as u8)
+    return 0
+}
+
+fn emit_stmt(s: *u8) -> i32 {
+    skip(s)
+    let hh = hash_ident(s)
+    if hh == 3476 { emit_fn(s)  return 0 }
+    if hh == 55525 { emit_let(s)  return 0 }
+    if hh == 3567 { emit_if(s)  return 0 }
+    if hh == 14425 { emit_while(s)  return 0 }
+    emit_assign(s)
+    return 0
+}
+
+fn _start() {
+    store32(12288, 0)
+    store32(12296, 0)
+    store32(12832, 0)
+    store32(13312, 0)
+    store32(13824, 0)
+
+    emit(85)
+    emit(72)  emit(137)  emit(229)
+    emit(72)  emit(129)  emit(236)  emit32(64)
+
+    let s = 28672
+    while peek(s) != 0 { emit_stmt(s)  skip(s) }
+
+    emit(72)  emit(137)  emit(236)
+    emit(93)
+    emit(195)
+    emit(195)
+
+    resolve_calls()
+
+    if load8(28672) == 64 { sys_exit(load32(12296)) }
+    sys_exit(run(24576))
+}
