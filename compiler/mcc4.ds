@@ -1,0 +1,295 @@
+// mcc4.ds — 带 if / while 的 Ds 编译器（⑤ 第六圈）
+//
+// 在 mcc2 的基础上支持：
+//   let <v> = <num>          声明
+//   <v> = <expr>             赋值（expr 支持 + - * 与变量）
+//   while <v> < <num> { ... } 循环（只支持 '<'，jge 退出）
+//   if <v> < <num> { ... }    条件（只支持 '<'，jge 跳过）
+//
+// 生成示例（let i = 0 let s = 0 while i < 5 { s = s + i i = i + 1 } s = s + 0）：
+//   prologue
+//   mov eax,0 / mov [rbp-4],eax      ; i = 0
+//   mov eax,0 / mov [rbp-8],eax      ; s = 0
+// cond:
+//   mov eax,[rbp-4] / cmp eax,5 / jge exit
+//   mov eax,[rbp-8] / push / mov eax,[rbp-4] / pop rbx / add eax,ebx / mov [rbp-8],eax
+//   mov eax,[rbp-4] / push / mov eax,1 / pop rbx / add / mov [rbp-4],eax
+//   jmp cond
+// exit:
+//   ...
+//
+// 内存：0x3000 源码pos / 0x3008 代码长度 / 0x3140 符号数
+//       0x3100 名字 / 0x3120 偏移 / 0x6000 代码缓冲 / 0x7000 源码
+
+fn peek(s: *u8) -> i32 {
+    return load8(s + load32(12288))
+}
+
+fn advance() -> i32 {
+    store32(12288, load32(12288) + 1)
+    return 0
+}
+
+fn peek_at(s: *u8, k: i32) -> i32 {
+    return load8(s + load32(12288) + k)
+}
+
+fn skip(s: *u8) -> i32 {
+    while peek(s) == 32 { advance() }
+    return 0
+}
+
+fn emit(b: i32) -> i32 {
+    store8(24576 + load32(12296), b)
+    store32(12296, load32(12296) + 1)
+    return 0
+}
+
+fn emit32(v: i32) -> i32 {
+    emit(v as u8)
+    emit((v >> 8) as u8)
+    emit((v >> 16) as u8)
+    emit((v >> 24) as u8)
+    return 0
+}
+
+fn sym_set(ch: i32, off: i32) -> i32 {
+    let n = load32(12608)
+    store8(12544 + n, ch)
+    store32(12576 + n * 4, off)
+    store32(12608, n + 1)
+    return 0
+}
+
+fn sym_get(ch: i32) -> i32 {
+    let n = load32(12608)
+    let i = 0
+    while i < n {
+        if load8(12544 + i) == ch { return load32(12576 + i * 4) }
+        i = i + 1
+    }
+    return 0
+}
+
+fn is_digit(c: i32) -> i32 {
+    if c >= 48 { if c <= 57 { return 1 } }
+    return 0
+}
+
+fn is_alpha(c: i32) -> i32 {
+    if c >= 97 { if c <= 122 { return 1 } }
+    return 0
+}
+
+fn number(s: *u8) -> i32 {
+    let n = 0
+    while is_digit(peek(s)) == 1 {
+        n = n * 10 + (peek(s) - 48)
+        advance()
+    }
+    return n
+}
+
+fn emit_factor(s: *u8) -> i32 {
+    skip(s)
+    let c = peek(s)
+    if is_digit(c) == 1 {
+        let n = number(s)
+        emit(184)
+        emit32(n)
+        return 0
+    }
+    advance()
+    emit(139)
+    emit(69)
+    emit(sym_get(c))
+    return 0
+}
+
+fn emit_expr(s: *u8) -> i32 {
+    emit_factor(s)
+    skip(s)
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 {
+        let op = peek(s)
+        advance()
+        skip(s)
+        emit(80)
+        emit_factor(s)
+        emit(91)
+        if op == 43 {
+            emit(1)
+            emit(216)
+        } else {
+            if op == 42 {
+                emit(15)
+                emit(175)
+                emit(195)
+            } else {
+                emit(41)
+                emit(195)
+                emit(137)
+                emit(216)
+            }
+        }
+        skip(s)
+    }
+    return 0
+}
+
+// ---- let <v> = <num> ----
+fn emit_let(s: *u8) -> i32 {
+    advance()
+    advance()
+    advance()
+    advance()
+    skip(s)
+    let name = peek(s)
+    advance()
+    skip(s)
+    advance()
+    skip(s)
+    let n = number(s)
+    let slot = 0 - (4 * (load32(12608) + 1))
+    sym_set(name, slot)
+    emit(184)
+    emit32(n)
+    emit(137)
+    emit(69)
+    emit(slot)
+    return 0
+}
+
+// ---- <v> = <expr> ----
+fn emit_assign(s: *u8) -> i32 {
+    let name = peek(s)
+    advance()
+    skip(s)
+    advance()
+    skip(s)
+    emit_expr(s)
+    emit(137)
+    emit(69)
+    emit(sym_get(name))
+    return 0
+}
+
+// ---- while <v> < <num> { ... } ----
+fn emit_while(s: *u8) -> i32 {
+    advance()
+    advance()
+    advance()
+    advance()
+    advance()
+    advance()                     // 跳过 "while "
+    skip(s)
+    let vname = peek(s)
+    advance()
+    skip(s)
+    advance()                     // '<'
+    skip(s)
+    let limit = number(s)
+    skip(s)
+    advance()                     // '{'
+
+    let cond_pos = load32(12296)
+
+    emit(139)
+    emit(69)
+    emit(sym_get(vname))            // mov eax, [rbp+off]
+    emit(61)                      // cmp eax, imm32
+    emit32(limit)
+    emit(125)                     // jge rel8
+    let jge_pos = load32(12296)
+    emit(0)                       // 占位
+
+    // 循环体
+    while peek(s) != 125 {
+        emit_stmt(s)
+        skip(s)
+    }
+    advance()                     // '}'
+
+    emit(235)                     // jmp rel8
+    let jmp_pos = load32(12296)
+    let back = cond_pos - (jmp_pos + 1)
+    emit(back as u8)
+
+    // 回填 jge 到 exit
+    let exit_target = load32(12296)
+    store8(24576 + jge_pos, (exit_target - (jge_pos + 1)) as u8)
+    return 0
+}
+
+// ---- if <v> < <num> { ... } ----
+fn emit_if(s: *u8) -> i32 {
+    advance()
+    advance()
+    advance()                     // 跳过 "if "
+    skip(s)
+    let vname = peek(s)
+    advance()
+    skip(s)
+    advance()                     // '<'
+    skip(s)
+    let limit = number(s)
+    skip(s)
+    advance()                     // '{'
+
+    emit(139)
+    emit(69)
+    emit(sym_get(vname))          // mov eax, [rbp+off]
+    emit(61)                      // cmp eax, imm32
+    emit32(limit)
+    emit(125)                     // jge rel8 -> 跳过 body
+    let jge_pos = load32(12296)
+    emit(0)                       // 占位
+
+    while peek(s) != 125 {
+        emit_stmt(s)
+        skip(s)
+    }
+    advance()                     // '}'
+
+    let target = load32(12296)
+    store8(24576 + jge_pos, (target - (jge_pos + 1)) as u8)
+    return 0
+}
+
+fn emit_stmt(s: *u8) -> i32 {
+    skip(s)
+    if peek(s) == 108 && peek_at(s, 1) == 101 { emit_let(s)  return 0 }
+    if peek(s) == 105 && peek_at(s, 1) == 102 { emit_if(s)  return 0 }
+    if peek(s) == 119 && peek_at(s, 1) == 104 { emit_while(s)  return 0 }
+    emit_assign(s)
+    return 0
+}
+
+fn _start() {
+    store32(12288, 0)
+    store32(12296, 0)
+    store32(12608, 0)
+
+    emit(85)
+    emit(72)
+    emit(137)
+    emit(229)
+    emit(72)
+    emit(129)
+    emit(236)
+    emit32(64)                    // sub rsp, 64
+
+    let s = 28672
+    while peek(s) != 0 {
+        emit_stmt(s)
+        skip(s)
+    }
+
+    emit(72)
+    emit(137)
+    emit(236)
+    emit(93)
+    emit(195)
+
+    if load8(28672) == 64 { sys_exit(load32(12296)) }
+    sys_exit(run(24576))
+}
