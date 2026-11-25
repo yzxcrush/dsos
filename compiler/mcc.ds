@@ -1,0 +1,75 @@
+// mcc.ds — Ds 写的"常量表达式编译器"（⑤ 第三圈）
+// 把 "2+3*4" 编译成 `mov eax,14; ret` 写入缓冲区，run(buf) 执行。
+// 这是"Ds 编译器真的产出机器码"的第一个完整闭环（常量折叠形式）。
+
+fn peek(s: *u8) -> i32 {
+    return load8(s + load32(12288))
+}
+
+fn advance() -> i32 {
+    store32(12288, load32(12288) + 1)
+    return 0
+}
+
+fn skip(s: *u8) -> i32 {
+    while peek(s) == 32 { advance() }
+    return 0
+}
+
+fn number(s: *u8) -> i32 {
+    let n = 0
+    while peek(s) >= 48 && peek(s) <= 57 {
+        n = n * 10 + (peek(s) - 48)
+        advance()
+    }
+    return n
+}
+
+fn factor(s: *u8) -> i32 {
+    skip(s)
+    if peek(s) == 40 {
+        advance()
+        let v = expr(s)
+        skip(s)
+        advance()
+        return v
+    }
+    return number(s)
+}
+
+fn term(s: *u8) -> i32 {
+    let v = factor(s)
+    skip(s)
+    while peek(s) == 42 {
+        advance()
+        v = v * factor(s)
+        skip(s)
+    }
+    return v
+}
+
+fn expr(s: *u8) -> i32 {
+    let v = term(s)
+    skip(s)
+    while peek(s) == 43 {
+        advance()
+        v = v + term(s)
+        skip(s)
+    }
+    return v
+}
+
+fn _start() {
+    store32(12288, 0)
+    let s = "2+3*4"
+    let v = expr(s)          // 常量折叠：14
+    let buf = 24576
+    // mov eax, imm32
+    store8(buf, 184)
+    store8(buf + 1, v as u8)
+    store8(buf + 2, (v >> 8) as u8)
+    store8(buf + 3, (v >> 16) as u8)
+    store8(buf + 4, (v >> 24) as u8)
+    store8(buf + 5, 195)     // ret
+    sys_exit(run(buf))
+}
