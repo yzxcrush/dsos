@@ -1,0 +1,67 @@
+// mc.ds — 用 Ds 写的最小算术表达式求值器（⑤ 第一圈）
+// 支持：整数、+ - * 、括号、空格；运算符优先级 * > + 。
+// 全局位置用固定地址 0x3000 上的 load32/store32 模拟（mini 后端尚无全局变量）。
+// 递归下降：expr -> term -> factor。
+
+fn peek(s: *u8) -> i32 {
+    return load8(s + load32(12288))
+}
+
+fn advance() -> i32 {
+    store32(12288, load32(12288) + 1)
+    return 0
+}
+
+fn skip(s: *u8) -> i32 {
+    while peek(s) == 32 { advance() }
+    return 0
+}
+
+fn number(s: *u8) -> i32 {
+    let n = 0
+    while peek(s) >= 48 && peek(s) <= 57 {
+        n = n * 10 + (peek(s) - 48)
+        advance()
+    }
+    return n
+}
+
+fn factor(s: *u8) -> i32 {
+    skip(s)
+    if peek(s) == 40 {
+        advance()
+        let v = expr(s)
+        skip(s)
+        advance()
+        return v
+    }
+    return number(s)
+}
+
+fn term(s: *u8) -> i32 {
+    let v = factor(s)
+    skip(s)
+    while peek(s) == 42 {
+        advance()
+        v = v * factor(s)
+        skip(s)
+    }
+    return v
+}
+
+fn expr(s: *u8) -> i32 {
+    let v = term(s)
+    skip(s)
+    while peek(s) == 43 {
+        advance()
+        v = v + term(s)
+        skip(s)
+    }
+    return v
+}
+
+fn _start() {
+    store32(12288, 0)
+    let s = "2+3*4"
+    sys_exit(expr(s))
+}
