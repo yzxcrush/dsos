@@ -1,18 +1,29 @@
-// kernel.ds — 最小可运行的 DsOS 内核（全部字节由 Ds 源码经 Ds 工具链编译）
+// kernel.ds — DsOS 最小内核 v0.8（全部字节由 Ds 源码经 Ds 工具链编译）
 //
-// 功能：
-//   1. 清屏
-//   2. 打印三行横幅
-//   3. 轮询 PS/2 键盘，把扫描码以十六进制回显
-//   4. ESC（扫描码 0x01）停机
+// 屏幕布局（80x25）：
+//   row 0    标题
+//   row 1    副标题（证明由 Ds 工具链编译）
+//   row 2    分隔线
+//   row 4-19 日志区（满则上滚）
+//   row 21   心跳：[beat NNNN] + 旋转 | / - \
+//   row 22   命令行：cmd> 输入回显
+//   row 24   状态栏
 //
-// 编译：mini.py target=bare → 裸机 x86-64 机器码，由冻结的 stage2 加载到 0x9000 执行。
+// 命令：help（显示帮助） / shutdown（ACPI S5 真断电，失败则停机） / ESC（停机）
+//
 // 本文件中没有一行 C，也没有一行汇编——所有指令都由 Ds 编译器生成。
 
-fn vga_put(row: i32, col: i32, ch: i32) -> i32 {
-    store8(753664 + row * 160 + col * 2, ch)
-    store8(753664 + row * 160 + col * 2 + 1, 15)
+// ---------- VGA ----------
+// 3 参数限制：字符与颜色打包  cp = ch | (color << 8)
+fn vga_put2(row: i32, col: i32, cp: i32) -> i32 {
+    let base = 753664 + row * 160 + col * 2
+    store8(base, cp & 255)
+    store8(base + 1, (cp >> 8) & 255)
     return 0
+}
+
+fn vga_put(row: i32, col: i32, ch: i32) -> i32 {
+    return vga_put2(row, col, ch | 3840)
 }
 
 fn clear() -> i32 {
@@ -25,13 +36,22 @@ fn clear() -> i32 {
     return 0
 }
 
-fn puts(row: i32, s: *u8) -> i32 {
+fn clear_row(r: i32) -> i32 {
+    let c = 0
+    while c < 80 {
+        vga_put(r, c, 32)
+        c = c + 1
+    }
+    return 0
+}
+
+fn puts_at(row: i32, col0: i32, s: *u8) -> i32 {
     let i = 0
     let c = 1
     while c != 0 {
         c = load8(s + i)
         if c == 0 { return 0 }
-        vga_put(row, i, c)
+        vga_put(row, col0 + i, c)
         i = i + 1
     }
     return 0
@@ -42,24 +62,225 @@ fn hexc(n: i32) -> i32 {
     return 87 + n
 }
 
+// ---------- 日志区 ----------
+fn scroll_log() -> i32 {
+    let r = 4
+    while r < 19 {
+        let c = 0
+        while c < 80 {
+            let src = 753664 + ((r + 1) * 80 + c) * 2
+            let dst = 753664 + (r * 80 + c) * 2
+            store8(dst, load8(src))
+            store8(dst + 1, load8(src + 1))
+            c = c + 1
+        }
+        r = r + 1
+    }
+    clear_row(19)
+    return 0
+}
+
+fn log(row: i32, s: *u8) -> i32 {
+    if row > 19 {
+        scroll_log()
+        row = 19
+    }
+    puts_at(row, 0, s)
+    return row + 1
+}
+
+// ---------- 延迟 / 心跳 ----------
+fn delay(k: i32) -> i32 {
+    let i = 0
+    while i < k {
+        out8(128, 0)
+        i = i + 1
+    }
+    return 0
+}
+
+fn heartbeat(n: i32) -> i32 {
+    puts_at(21, 0, "[beat ")
+    vga_put(21, 6, hexc((n >> 12) & 15))
+    vga_put(21, 7, hexc((n >> 8) & 15))
+    vga_put(21, 8, hexc((n >> 4) & 15))
+    vga_put(21, 9, hexc(n & 15))
+    puts_at(21, 10, "] ")
+    let ph = n & 3
+    let ch = 124
+    if ph == 1 { ch = 47 }
+    if ph == 2 { ch = 45 }
+    if ph == 3 { ch = 92 }
+    vga_put(21, 12, ch)
+    return 0
+}
+
+fn divider() -> i32 {
+    let c = 0
+    while c < 80 {
+        vga_put2(2, c, 45 | 2048)
+        c = c + 1
+    }
+    return 0
+}
+
+fn status_bar() -> i32 {
+    let c = 0
+    while c < 80 {
+        vga_put2(24, c, 32 | 28672)
+        c = c + 1
+    }
+    puts_at(24, 1, "DsOS v0.8 | help / shutdown | ESC = halt")
+    return 0
+}
+
+// ---------- 扫描码 -> ASCII（只映射命令需要的字母） ----------
+fn sc2ascii(sc: i32) -> i32 {
+    if sc == 35 { return 104 }          // h
+    if sc == 18 { return 101 }          // e
+    if sc == 38 { return 108 }          // l
+    if sc == 25 { return 112 }          // p
+    if sc == 31 { return 115 }          // s
+    if sc == 22 { return 117 }          // u
+    if sc == 20 { return 116 }          // t
+    if sc == 32 { return 100 }          // d
+    if sc == 24 { return 111 }          // o
+    if sc == 17 { return 119 }          // w
+    if sc == 49 { return 110 }          // n
+    if sc == 57 { return 32 }           // 空格
+    return 0
+}
+
+// ---------- ACPI S5 关机 ----------
+fn is_rsdp(a: i32) -> i32 {
+    if load8(a) != 82 { return 0 }
+    if load8(a + 1) != 83 { return 0 }
+    if load8(a + 2) != 68 { return 0 }
+    if load8(a + 3) != 32 { return 0 }
+    if load8(a + 4) != 80 { return 0 }
+    if load8(a + 5) != 84 { return 0 }
+    if load8(a + 6) != 82 { return 0 }
+    if load8(a + 7) != 32 { return 0 }
+    return 1
+}
+
+fn is_facp(a: i32) -> i32 {
+    if load8(a) != 70 { return 0 }
+    if load8(a + 1) != 65 { return 0 }
+    if load8(a + 2) != 67 { return 0 }
+    if load8(a + 3) != 80 { return 0 }
+    return 1
+}
+
+fn find_rsdp() -> i32 {
+    let a = 917504                      // 0xE0000
+    while a < 1048576 {                 // < 0x100000
+        if is_rsdp(a) == 1 { return a }
+        a = a + 16
+    }
+    return 0
+}
+
+fn find_fadt() -> i32 {
+    let r = find_rsdp()
+    if r == 0 { return 0 }
+    let rsdt = load32(r + 16)
+    if rsdt == 0 { return 0 }
+    let n = (load32(rsdt + 4) - 36) >> 2
+    let i = 0
+    while i < n {
+        let p = load32(rsdt + 36 + i * 4)
+        if is_facp(p) == 1 { return p }
+        i = i + 1
+    }
+    return 0
+}
+
+fn shutdown() -> i32 {
+    let f = find_fadt()
+    if f == 0 { return 0 }
+    let pm = load32(f + 64) & 65535     // PM1a_CNT_BLK
+    if pm == 0 { return 0 }
+    let val = (5 << 10) | 8192          // SLP_TYPa(S5)=5 | SLP_EN
+    out8(pm, val & 255)
+    out8(pm + 1, (val >> 8) & 255)
+    return 1
+}
+
 fn _start() {
     clear()
-    puts(0, "DsOS v0.6 - kernel compiled from Ds source")
-    puts(1, "Ds toolchain -> x86-64 machine code")
-    puts(2, "keys echo scancodes; ESC halts")
+    puts_at(0, 0, "DsOS v0.8  -  kernel compiled from Ds source")
+    puts_at(1, 0, "Ds toolchain -> x86-64 machine code")
+    divider()
+    status_bar()
+
     let row = 4
-    let col = 0
+    row = log(row, "[boot] clear screen .................. ok")
+    row = log(row, "[boot] VGA 80x25 text mode ........... ok")
+    row = log(row, "[boot] heartbeat timer (port 0x80) ... armed")
+    row = log(row, "[boot] keyboard polling (0x64/0x60) .. armed")
+    row = log(row, "[boot] ACPI S5 shutdown ............. ready")
+    row = log(row, "[boot] type 'help' then Enter")
+    row = log(row, "[boot] entering main loop")
+
+    clear_row(22)
+    puts_at(22, 0, "cmd> ")
+
+    let hsh = 0
+    let nlen = 0
+    let beat = 0
     while 1 == 1 {
+        beat = beat + 1
+        heartbeat(beat)
+        delay(30000)
+
         let st = in8(100)
         if (st & 1) == 1 {
             let sc = in8(96)
             if sc == 1 { halt() }
-            if sc < 128 {
-                vga_put(row, col, hexc(sc >> 4))
-                col = col + 1
-                vga_put(row, col, hexc(sc & 15))
-                col = col + 1
-                if col > 70 { col = 0  row = row + 1 }
+            if sc == 28 {                       // Enter
+                if nlen > 0 {
+                    let known = 0
+                    if hsh == 50025 {           // "help"
+                        known = 1
+                        row = log(row, "[cmd] help ------------------------")
+                        row = log(row, "[cmd]   help      show this text")
+                        row = log(row, "[cmd]   shutdown  ACPI S5 power off")
+                        row = log(row, "[cmd]   ESC       halt CPU")
+                        row = log(row, "[cmd] ------------------------------")
+                    }
+                    if hsh == 47452 {           // "shutdown"
+                        known = 1
+                        row = log(row, "[cmd] shutdown -> ACPI S5")
+                        if shutdown() == 0 {
+                            row = log(row, "[acpi] no FADT found, halting")
+                        }
+                        halt()
+                    }
+                    if known == 0 {
+                        row = log(row, "[cmd] unknown command, type 'help'")
+                    }
+                    clear_row(22)
+                    puts_at(22, 0, "cmd> ")
+                    hsh = 0
+                    nlen = 0
+                }
+            } else {
+                if sc == 14 {                   // Backspace：清空输入
+                    hsh = 0
+                    nlen = 0
+                    clear_row(22)
+                    puts_at(22, 0, "cmd> ")
+                } else {
+                    let ch = sc2ascii(sc)
+                    if ch != 0 {
+                        if nlen < 12 {
+                            vga_put(22, 5 + nlen, ch)
+                            nlen = nlen + 1
+                            hsh = (hsh * 33 + ch) & 65535
+                        }
+                    }
+                }
             }
         }
     }

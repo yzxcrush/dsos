@@ -243,6 +243,49 @@ class Backend:
                 self.e.e(b"\x5a")             # pop rdx (value)
                 self.e.e(STORE[name])         # mov [rax], <rdx 窄>
                 return
+            # ---- 系统级内建：为"长模式 -> 实模式 -> 长模式"往返铺路 ----
+            if name == "rdmsr":
+                self.expr(n.args[0])                  # ecx = msr 号
+                self.e.e(b"\x89\xc1")               # mov ecx, eax
+                self.e.e(b"\x0f\x32")               # rdmsr
+                self.e.e(b"\x48\xc1\xe2\x20")     # shl rdx, 32
+                self.e.e(b"\x48\x09\xd0")          # or rax, rdx
+                return
+            if name == "wrmsr":
+                self.expr(n.args[0])                  # msr
+                self.e.e(b"\x89\xc1")               # mov ecx, eax
+                self.expr(n.args[1])                  # value -> rax
+                self.e.e(b"\x48\x89\xc2")          # mov rdx, rax
+                self.e.e(b"\x48\xc1\xea\x20")     # shr rdx, 32
+                self.e.e(b"\x0f\x30")               # wrmsr
+                return
+            CRC = {"read_cr0": b"\x0f\x20\xc0", "read_cr3": b"\x0f\x20\xd8",
+                   "read_cr4": b"\x0f\x20\xe0"}
+            if name in CRC:
+                self.e.e(CRC[name])
+                return
+            CWC = {"write_cr0": b"\x0f\x22\xc0", "write_cr3": b"\x0f\x22\xd8",
+                   "write_cr4": b"\x0f\x22\xe0"}
+            if name in CWC:
+                self.expr(n.args[0])
+                self.e.e(b"\x48\x89\xc0")          # mov rax, rax（占位保持语义）
+                self.e.e(CWC[name])
+                return
+            if name == "lgdt":
+                self.expr(n.args[0])
+                self.e.e(b"\x0f\x01\x10")          # lgdt [rax]
+                return
+            if name == "lidt":
+                self.expr(n.args[0])
+                self.e.e(b"\x0f\x01\x18")          # lidt [rax]
+                return
+            if name == "invlpg":
+                self.expr(n.args[0])
+                self.e.e(b"\x0f\x01\x38")          # invlpg [rax]
+                return
+            if name == "sti":
+                self.e.e(b"\xfb")
+                return
             if name == "run":
                 # 跳到运行时生成的代码：call rax；返回值留在 rax
                 self.expr(n.args[0])          # rax = addr
