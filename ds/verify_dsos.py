@@ -34,7 +34,7 @@ if len(CODE) > 12288:
 BASE = 0x9000
 KEY = {"h": 0x23, "e": 0x12, "l": 0x26, "p": 0x19, "s": 0x1F, "u": 0x16,
        "t": 0x14, "d": 0x20, "o": 0x18, "w": 0x11, "n": 0x31,
-       "\n": 0x1C, "\x1b": 0x01, "x": 0x2D}
+       "\n": 0x1C, "\x1b": 0x01, "g": 0x22, "f": 0x21}
 
 
 def keys_of(s):
@@ -113,7 +113,7 @@ rip_off = uc.reg_read(UC_X86_REG_RIP) - BASE
 scr = screen(uc, 25)
 print("=== A. 启动 ===")
 print(scr)
-results["A 横幅"] = "DsOS v0.8" in row(uc, 0) and "Ds toolchain" in row(uc, 1)
+results["A 横幅"] = "DsOS v0.9" in row(uc, 0) and "Ds toolchain" in row(uc, 1)
 results["A 日志"] = "entering main loop" in scr and "ACPI S5" in scr
 results["A 心跳推进"] = hb1.startswith("[beat") and hb1 != hb2
 results["A ESC 停机"] = at_halt(rip_off)
@@ -126,7 +126,7 @@ run(uc, 12000000)
 scr = screen(uc, 25)
 print("\n=== B. help ===")
 print(scr)
-results["B help 生效"] = "show this text" in scr and "ACPI S5 power off" in scr
+results["B help 生效"] = "this text" in scr and "same as shutdown" in scr
 results["B 命令行回显"] = "cmd>" in scr
 
 # ---------- C. shutdown（ACPI） ----------
@@ -145,6 +145,31 @@ rip_off = uc.reg_read(UC_X86_REG_RIP) - BASE
 results["C 停机"] = at_halt(rip_off)
 print(f"  halt 位置 {halt_offs}, 最终 RIP 偏移 {rip_off}")
 
+# ---------- E. log（内存日志环） ----------
+uc, st = boot()
+st["keys"] = keys_of("log\n")
+run(uc, 12000000)
+scr = screen(uc, 25)
+print("\n=== E. log ===")
+print(scr)
+results["E log 翻出历史"] = "memory log ring" in scr or "[boot] clear screen" in scr
+results["E log 结束标记"] = "end of log" in scr
+
+# ---------- F. off（关机快捷键） ----------
+uc, st = boot(with_acpi=True)
+st["keys"] = keys_of("off\n")
+run(uc, 20000000)
+scr = screen(uc, 25)
+outs = st["outs"]
+pm_writes = [(p, v) for p, v in outs if p in (0x604, 0x605)]
+print("\n=== F. off ===")
+print(scr)
+print(f"  端口写入: {[(hex(p), hex(v)) for p, v in pm_writes]}")
+results["F off 日志"] = "off -> ACPI S5" in scr
+results["F off ACPI 0x3400"] = (0x604, 0x00) in pm_writes and (0x605, 0x34) in pm_writes
+rip_off = uc.reg_read(UC_X86_REG_RIP) - BASE
+results["F off 停机"] = at_halt(rip_off)
+
 # ---------- D. 未知命令 ----------
 uc, st = boot()
 st["keys"] = keys_of("h\n")   # 单字母 h：未映射成命令 -> unknown
@@ -152,7 +177,7 @@ run(uc, 12000000)
 scr = screen(uc, 25)
 print("\n=== D. 未知命令 ===")
 print(scr)
-results["D unknown 提示"] = "unknown command" in scr
+results["D unknown 提示"] = "unknown, type" in scr
 
 print("\n=== 结论 ===")
 ok_all = True

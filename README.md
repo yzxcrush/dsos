@@ -1,188 +1,241 @@
-# DsOS — Ds 语言原生操作系统
+# DsOS
 
-> **一句话**：用 Ds 语言家族的三个层，从复位向量一路写到用户态；不经过 C、汇编器、链接器、libc。
-> 本仓库是 [`yzxcrush/ds`](https://github.com/yzxcrush/ds) 中 `dsos/` 子树的下游镜像，外加**运行时验证工具链**与 **v0.5 桌面控制台**。
+> **一个用 Ds 语言家族从零写起的操作系统内核。**
+> 不是移植，不是绑定 C 库，是每一字节机器码都由 Ds 编译器生成。
 
 ---
 
-## DsOS 是什么
+## 一、它现在真的能做什么
 
-**它不是一个"用 Ds 写点裸机代码"的演示，而是 Ds 语言家族的最终自证**：同一套语言、同一套语义，从
-`jmp 0x7c00` 的位置开始，一路构建出可引导镜像、中断系统、交互终端，中间不引入第二门语言。
+DsOS v0.9 能在一台普通 PC 上**真实启动**，进入 80×25 文本模式，跑一个 7001 字节的内核——
+这 7001 字节全部由 `.ds` 源码编译而来。
 
-传统 OS 是「C + 汇编启动 + C 内核 + C 驱动 + libc + 用户程序」；
+插上 U 盘、开机、选启动项，屏幕上出现：
+
+```text
+DsOS v0.9  -  kernel compiled from Ds source
+Ds toolchain -> x86-64 machine code
+--------------------------------------------------------------------------------
+[boot] clear screen .................. ok
+[boot] VGA 80x25 text mode ........... ok
+[boot] heartbeat timer (port 0x80) ... armed
+[boot] keyboard polling (0x64/0x60) .. armed
+[boot] memory log ring 0x4000 ....... 60 slots
+[boot] ACPI S5 shutdown ............. ready
+[boot] type 'help' then Enter
+[boot] entering main loop
+
+[beat 0042] /
+cmd>
+ DsOS v0.9 | help log shutdown off | ESC = halt
+```
+
+然后你可以：
+
+| 你做什么 | 会发生什么 |
+|---|---|
+| 什么都不做 | 看 `[beat 0001] → [beat 0002] → …` 递增，末尾 `\| / - \` 旋转——**这就是"活着"的证据** |
+| 敲键盘 | `cmd>` 后面出现字母 |
+| 敲 `help` 回车 | 日志区列出 5 条命令 |
+| 敲 `log` 回车 | 把内存日志环里的**完整历史**回放到屏幕（不受上滚影响） |
+| 敲 `off` 或 `shutdown` 回车 | 走 ACPI S5，**机器真的断电** |
+| 按 `ESC` | `cli; hlt` 停机，画面冻结 |
+
+这些不是模拟器截图，是在真实硬件上跑出来的。
+
+## 二、为什么这件事有意思
+
+写一个能启动的操作系统，本身不新鲜。**用 Ds 写**，才让这件事变成一个实验：
+
+> 一门为裸机设计的语言，究竟能不能把自己的运行时地基（驱动、中断、终端）也写出来？
+
+传统 OS 是「C + 汇编启动 + C 内核 + 驱动 + libc」；
 DsOS 的目标结构是：
 
 ```text
-Ds/Cut   （16 token 裸机子语言）   启动、异常向量、最底层驱动
+Ds/Cut   16 个 token 的裸机子语言         启动、异常向量、最底层驱动
    ⊂
-Ds Base  （77 关键字，已冻结）     内核主体：内存、调度、模块、shell
+Ds Base  77 个关键字（已冻结 ds-base-v1）  内核主体：内存、调度、模块、shell
    ⊂
-Ds+      （77 + 16 个 @ 令牌）     硬件能力：端口 IO / MSR / MMIO / 内存区域
+Ds+      77 + 16 个 @ 令牌                硬件能力：端口 IO / MSR / MMIO
 ```
 
-**为什么值得做**：换成 C 写，这套东西只是又一个 hobby OS；用 Ds 写，它同时是
-「语言可用性的压力测试」——语言在哪里不够用，内核会立刻暴露出来。
+换 C 来写，这只是又一个 hobby OS；用 Ds 来写，它同时是**语言可用性的压力测试**——
+语言在哪里不够用，内核会立刻告诉你，一次都藏不住。
 
-## 它现在真正能做什么
+## 三、它是怎么长出来的
+
+这一点必须说清楚，因为它是这个项目最诚实的部分。
 
 ```text
-┌────────────────────────────────────────────────────────┐
-│ DsOS v0.5  -  keyboard + shell + ACPI                  │  ← 蓝底白字标题栏
-├────────────────────────────────────────────────────────┤
-│ DsOS v0.5  desktop console                             │
-│ [boot] idt: 256 gates, irq0/irq1 installed             │
-│ [boot] pic: remapped to 0x20/0x28, irq0+irq1 unmasked  │
-│ [boot] keyboard: irq1 enabled (poll fallback armed)    │
-│ [boot] acpi: parser ready, run 'shutdown' to power off │
-│ dsos> help                                             │
-│   help  ticks  clear  log  shutdown  reboot            │
-│ dsos> █                                                │
-├────────────────────────────────────────────────────────┤
-│ help   ticks   clear   shutdown   reboot               │  ← 灰底黑字状态栏
-└────────────────────────────────────────────────────────┘
+第 1 阶段  Python 直接发机器码
+           ├─ gen_boot.py   手工编排 MBR + stage2
+           └─ kernel.py     手工编排内核字节
+           → 得到能真机启动的 v0.4 / v0.5
+           × 问题：内核不是"写"出来的，是"拼"出来的
+
+第 2 阶段  先做一个能写内核的 Ds 编译器
+           ├─ mcc2  变量 + 完整指令序列
+           ├─ mcc3  while 回边 + 跳转回填
+           ├─ mcc4  if 分支
+           ├─ mcc5  多字符标识符 + 关键字哈希
+           ├─ mcc6  函数定义与调用（含前向回填）
+           ├─ mcc7  全部比较运算符 + else
+           ├─ mcc8  表达式内 && / ||（历史版本）
+           └─ mcc9  换行/注释词法 + 条件内 && / || 链
+           → 17 项功能验收 + 5 套专项全部通过
+
+第 3 阶段  用这个编译器写 DsOS
+           └─ kernel.ds → 7001 字节机器码 → 真机启动
 ```
 
-| 能力 | 说明 |
+**当前状态的准确表述**：
+
+| 部分 | 由什么生成 | 状态 |
+|---|---|---|
+| 内核（7001 字节） | **Ds 编译器**，源码是 `kernel.ds` | ✅ 真机已验证 |
+| 引导链（MBR + stage2，4608 字节） | Python 发射器（冻结的 Stage-0 原型） | ⚠️ 仍是 Python |
+| Ds 编译器本身（mini.py） | Python（bootstrap 层） | ⚠️ 仍是 Python |
+
+所以：**内核已经是 Ds 编译的，但引导链和编译器还不是。**
+这三者之间隔着路线图里的自举固定点（`T2 == T3`）。
+
+## 四、镜像是怎么造出来的
+
+```bash
+# 编译内核（Ds 源码 → 裸机 x86-64）并与冻结引导链拼接
+cd ds
+python3 build_dsos.py
+```
+
+一次典型的构建记录：
+
+```text
+kernel.ds 编译: 7001 字节
+引导链存档: bootchain.bin  4608 B
+[image] 引导签名 0x55AA:        PASS
+[image] 内核槽字节 == Ds 输出:   PASS
+[image] MBR 分区项(0x0C):        PASS
+[image] 分区起点有引导扇区副本:   PASS
+sha256: d2f24a183b9a033956c0ece413dfd5d9f5a1d063faf2225895a87a4160411fc5
+```
+
+几个不那么显然的设计：
+
+- **分区表是必需的**。最初镜像的分区表全零，很多 BIOS 就不把这块盘列进启动菜单，
+  机器直接从硬盘进 Windows。加上一条类型 `0x0C` 的活动分区项之后才被识别。
+- **分区起点放了一份引导扇区副本**。这样无论 BIOS 走"整盘 MBR"还是"活动分区 VBR"，
+  都会落进同一段引导代码。
+- **stage1 一次读 32 扇区**。原版只读 16 扇区（4096 字节内核区），内核涨到 7 KB 后必须扩容。
+  改的是引导链里一个字节，原版留档为 `bootchain16.bin`。
+
+## 五、验证状态：三档口径
+
+这个项目严格区分"跑过"和"没跑过"。
+
+| 结论 | 证据 |
 |---|---|
-| 启动 | legacy BIOS → MBR → 实模式 → 保护模式 → **PAE 长模式**，全程字节由 Python 生成 |
-| 中断 | IDT 256 门、PIC 重映射到 `0x20/0x28`、IRQ0 计时、IRQ1 键盘 |
-| 键盘 | PS/2 扫描码 → ASCII → 环形缓冲；**IRQ1 不投递时自动降级轮询** |
-| 显示 | VGA 文本 80×25，双缓冲游标，**滚动**，标题栏/状态栏 |
-| 终端 | `dsos>` 提示符、回显、退格、120 字符行缓冲 |
-| 命令 | `help` `ticks` `clear` `log` `shutdown` `reboot` |
-| 关机 | 解析 ACPI `RSDP → RSDT/XSDT → FADT`，取 `PM1a_CNT_BLK` 与 `SLP_TYPa`，发 **S5** 真断电；失败则安全停机 |
-| 串口 | 所有屏幕输出同步写 COM1（115200 8N1） |
+| **真机启动** | ✅ 在物理机上启动成功，横幅、心跳、键盘、`help`/`off` 均可用 |
+| **指令级验证**（unicorn = QEMU 的 TCG 核心） | ✅ 内核 15 项断言、编译器 17 项功能、5 套专项 |
+| **未验证** | ❌ 日志落盘（需要模式切换，而 unicorn 无法模拟）、中断/IDT、文件系统 |
 
-**关键工程约束**：内核是**手写机器码**，由 `dsos/shell/kernel.py`（指令发射器）+ `kernel_body.py`（内核逻辑）
-逐字节生成，当前 2,096 字节，预算 4,096 字节。
+指令级验证覆盖的具体项：
 
-## 它现在还不能做什么
+```text
+A 启动      横幅 / 日志 8 行 / 心跳推进 / ESC 停机
+B help      帮助文本落屏 / 命令行回显
+C shutdown  ACPI 写 0x604 = 0x3400 / 停机
+E log       内存日志环回放 / 结束标记
+F off       off 命令 / ACPI 写 0x3400 / 停机
+D           未知命令提示
+```
 
-诚实地列出来，避免被当成"能用的操作系统"：
+## 六、内核里有什么
+
+```text
+kernel.ds  7001 字节
+├─ VGA 驱动      文本模式写字符（字符+颜色打包，绕开 3 参数限制）
+├─ 日志系统      屏幕 4..19 行上滚 + 内存环形缓冲（60 槽 × 64 B @ 0x4000）
+├─ 心跳          端口 0x80 做 IO 延迟，每拍更新计数与旋转字符
+├─ 键盘驱动      轮询 0x64 状态位 + 0x60 扫描码，映射到命令字母
+├─ 命令行        哈希识别命令（h = h*33 + c；help=50025 log=55842 off=58811 shutdown=47452）
+├─ ACPI S5       RSDP → RSDT → FADT，取 PM1a_CNT_BLK，写 (5<<10)|0x2000
+└─ 状态栏        第 24 行反显
+```
+
+两点值得单独说：
+
+**心跳为什么重要**：黑屏时没有串口线可用，也没有调试器。一个每 30 ms 就往前走一格的
+计数器，是"系统没有三重故障、主循环还在转"的唯一直接证据。
+
+**日志为什么要内存环**：屏幕只有 16 行日志区，写满就滚掉。内存环保留最近 60 条，
+`log` 命令可以随时翻回去看——这是在还没有文件系统时，能给出的最接近"日志文件"的东西。
+
+## 七、当前边界（诚实清单）
 
 | 缺什么 | 后果 |
 |---|---|
-| 文件系统 | 不能读写文件；只有启动时的那一次读盘 |
-| 内存分配器 | 固定地址布局，不能动态申请 |
-| 进程 / 调度 | 只有一个主循环 + 中断 |
-| 用户态 / 系统调用 | 全部跑在内核态 |
-| 时间 | 没读 RTC，没有日期时间 |
-| 网络 / 图形 | 纯文本模式 |
-| UEFI | 只有 legacy MBR，UEFI-only 机器起不来 |
-| 内核直写 U 盘 | 需要自建 xHCI + USB 存储类 + FAT32，属独立工程 |
-| Multiboot 路径 | `phase1/kernel.bin` 从未被加载执行 |
+| 中断 / IDT | 键盘靠轮询，没有时钟中断，多任务无从谈起 |
+| 文件系统 | 不能读写文件；日志只在内存里，关机即丢 |
+| 内存管理 | 没有分配器，所有地址写死 |
+| 用户态 / 系统调用 | 全部跑在 ring 0 |
+| USB 写入 | 需要模式切换 thunk 或自建 xHCI 栈；前者无法用 unicorn 验证 |
+| UEFI | 只有 legacy MBR；UEFI-only 机器需要开 CSM |
+| 引导链用 Ds | 仍是 Python 发射器产物（规则 9 的冻结豁免） |
 
-## 路线图
+## 八、路线图
 
-| 段 | 内容 | 状态 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| P0 | 可引导镜像 + 心跳 | ✅ 真机已验证 |
-| P0.5 | 长模式内核 + 键盘 + shell + ACPI 关机 | ✅ 真机已验证（v0.4） |
-| P1 | 桌面控制台（滚动 + 标题栏/状态栏） | ✅ 指令级验证，真机待验（v0.5） |
-| P1.5 | 事件日志（记录 + `log` 回放） | ⚠️ 进行中，回放有缺陷 |
-| **P2** | **从 U 盘读 Ds 脚本** | 🚧 B1 已完成：stage2 从 LBA 630 读 32 扇区到 `0x20000` |
-| P2.5 | 内核执行 Ds 脚本（字节码 VM） | ⏳ 未开始 |
-| P3 | 文件系统 + 存储驱动 → 任意脚本 | ⏳ 独立工程 |
+| P0 | 可引导镜像 + 心跳 | ✅ 真机 |
+| P1 | 长模式 + 键盘 + shell + ACPI | ✅ 真机 |
+| P2 | 桌面控制台（滚动 + 标题栏） | ✅ 真机 |
+| P3 | Ds 编译器能编译内核 | ✅ `mcc9` + 17 项验收 |
+| **P4** | **全 Ds 内核启动（v0.9）** | ✅ **真机已确认** |
+| P5 | 中断 / IDT / 时钟 | ⏳ |
+| P6 | 内存管理与简单文件系统 | ⏳ |
+| P7 | 引导链也用 Ds 写（需 16 位代码生成） | ⏳ |
+| P8 | 自举固定点 `T2 == T3` | ⏳ |
 
-> **长期目标：让 DsOS 完全由 Ds 家族语言编写。** 完整路线（自举三段式、五个架构契约、阶段 A–G 与验收标准）
-> 见 [`ROADMAP.md`](ROADMAP.md)。
+## 九、快速开始
+
+```bash
+cd ds
+
+python3 build_dsos.py     # 编译内核 + 生成可引导镜像 dsos-ds.img
+python3 verify_dsos.py    # 完整验证（不需要硬件）
+python3 flash_dsos.py     # 写入 U 盘（带守卫与回读校验）
+```
+
+写盘前的守卫条件（`AGENTS.md` 第 5 条强制要求）：
+
+```text
+BusType == USB  且  IsSystem == False  且  IsBoot == False  且  容量 < 64 GB
+镜像大小是 512 整数倍，且 @510 == 0x55AA
+写前清零目标区域，写后逐字节回读比对
+```
+
+开机时按 F11 / F12 / F8 进启动菜单，选**不带 `UEFI:` 前缀**的那一项。
+菜单里看不到它：开 CSM / Legacy Boot，关 Secure Boot。
+
+## 十、仓库结构
+
+```text
+compiler/     Ds 编译器（迷你版）：mini.py + mcc2..mcc9 + 各层验收
+ds/           DsOS 内核：kernel.ds + 构建/验证/烧盘脚本 + 引导链存档
+spec/         ABI v1 与 IR 契约
+bootstrap/    自举 seed 契约（尚未落地）
+```
+
+待办见 [`ROADMAP.md`](ROADMAP.md) 与 issues。
+
+## 十一、与上游的关系
+
+- 上游语言：[`yzxcrush/ds`](https://github.com/yzxcrush/ds)
+- Base 语义冻结为 `ds-base-v1`，DsOS 本身不冻结
+- 本仓库遵守 [`AGENTS.md`](AGENTS.md) 的硬约束：先验收再烧盘、三档标注、单一现行版本
 
 ---
 
-## 当前发行版
-
-| 项 | 值 |
-|---|---|
-| 镜像 | `dsos/images/x86_64/dsos-x86_64-shell.img` |
-| SHA256 | `781dd3c39c9bdb69a6b75d1b60bc40922c544c4b2fd23a26c4849af35c2d2465` |
-| 大小 | 1,474,560 B（1.44 MiB） |
-| 启动方式 | legacy BIOS / CSM，写入 USB 后从 MBR 引导 |
-| 验收 | **11 项全 PASS**（`dsos/shell/verify_shell.py`） |
-
-### 源码比镜像新（请先读这条）
-
-`dsos/shell/` 源码**领先于发行镜像**，包含两个未完成的子系统：
-
-| 项 | 状态 |
-|---|---|
-| 事件日志：事件环记录 | ✅ 记录正确（`boot/idt/pic/keyboard/cmd *` 逐条对） |
-| 事件日志：`log` 回放 | ⚠️ **缺陷**：回放只输出一行并重复，验收 `[j]` **FAIL** |
-| 从 U 盘读脚本槽（B1） | ✅ 已验证：`verify_slot.py` 显示 `int13 lba=630 n=32 -> 0x20000`，magic `DSSC` |
-
-**因此这份源码重新构建得到的镜像不是发行版。**
-发行镜像 `781dd3c3…` 是最后一个全绿构建，已写入 USB 并在真机上出过画面。
-
-按 [`AGENTS.md`](AGENTS.md) 第 2 条，未通过验收的构建不烧盘 —— 仓库里"源码"与"镜像"暂时不一一对应，
-这是刻意的、有记录的差异。
-
----
-
-## 目录
-
-```text
-dsos/
-  images/x86_64/    boot_sector + stage2 + kernel 的生成器与产物
-  phase1/           Multiboot 内核（未验证）
-  toolchain/        step1..step5：手写机器码 → dscc 直出 x86_64
-  shell/            v0.5 内核源码、验收器、发布流水线、详细报告
-  arch/ boot/ bsp/  AArch64 / Thumb、RP2350、Zero 2 W
-verify/             交接包校验、可复现性、ELF/Multiboot 静态检查、指令级执行
-docs/               P0 验证报告
-AGENTS.md           本仓库的操作规约（硬约束）
-```
-
-## 快速开始
-
-```bash
-# 一条命令：构建 → 全套验收 → （可选）带守卫烧盘 + 回读校验
-cd dsos/shell
-python3 release.py            # 只构建 + 验收
-python3 release.py --flash    # 通过后才写 USB
-
-# B1：把 .ds 脚本写进 U 盘的脚本槽
-python3 put_script.py hello.ds --device 1
-python3 put_script.py --show --device 1
-
-# 单独跑验收（unicorn = QEMU TCG 核心）
-python3 verify_shell.py
-python3 verify_slot.py
-```
-
-写入 U 盘（Linux/macOS）：
-
-```bash
-sudo dd if=dsos/images/x86_64/dsos-x86_64-shell.img of=/dev/sdX bs=4M conv=fsync status=progress && sync
-```
-
-Windows：先移除卷盘符，再对 `\\.\PhysicalDriveN` 前 1,474,560 字节做原始写入。
-**写错盘会毁数据**，务必先确认盘号、`BusType=USB`、`IsSystem=False`。
-
-## 磁盘布局（脚本槽）
-
-```text
-LBA 0            MBR（stage1：读 16 扇区到 0x8000）
-LBA 1..16        stage2（A20 / GDT / 页表 / 长模式 / 跳内核）
-LBA 9..           kernel（加载到 0x9000）
-LBA 630..661      DSSCRIPT 槽：32 扇区 = 16 KiB → 加载到 0x20000
-                 格式：b"DSSC" + u32 长度 + UTF-8 源码
-```
-
-选 LBA 630 是因为 `630 = cyl0 / head10 / sector1`，32 扇区正好落在一条磁道内，不会踩 BIOS 的 CHS 边界。
-
-## 验证状态的三档口径
-
-| 档 | 含义 |
-|---|---|
-| **真机已验证** | 在真实硬件上看到预期画面/行为，有照片或串口日志 |
-| **指令级验证** | 在 unicorn（QEMU 的 TCG 核心）里逐指令执行并通过断言；**不等于**真机通过 |
-| **未验证** | 只有源码，没跑过 |
-
-[`docs/P0-VERIFICATION.md`](docs/P0-VERIFICATION.md) 记录了完整证据链，包括一次"真机首启断电"的根因复盘
-（stage2 → 内核的跳转位移少算了 `0x8000`，跳到空白页 → 三重故障 → 固件断电）。
-
-## 与上游的关系
-
-- 上游：<https://github.com/yzxcrush/ds>（提交 `7c8b086`）
-- Base 语言冻结为 `ds-base-v1`；DsOS 不冻结
-- 本仓库由接任的 AI 工程代理维护，遵守 [`AGENTS.md`](AGENTS.md)
+**一句话总结**：这个仓库里有一台真机上能启动、能跳心跳、能听懂命令、能真断电的操作系统，
+它的内核是 7001 字节，全部由 Ds 源码编译。引导链和编译器还在等它长大到能写自己。

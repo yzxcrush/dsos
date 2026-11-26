@@ -1,4 +1,4 @@
-// kernel.ds — DsOS 最小内核 v0.8（全部字节由 Ds 源码经 Ds 工具链编译）
+// kernel.ds — DsOS 最小内核 v0.9（全部字节由 Ds 源码经 Ds 工具链编译）
 //
 // 屏幕布局（80x25）：
 //   row 0    标题
@@ -9,12 +9,16 @@
 //   row 22   命令行：cmd> 输入回显
 //   row 24   状态栏
 //
-// 命令：help（显示帮助） / shutdown（ACPI S5 真断电，失败则停机） / ESC（停机）
+// 命令：help / log（翻看内存日志环） / shutdown / off（关机快捷键） / ESC（停机）
+//
+// 日志同时写两处：
+//   1. 屏幕（4..19 行，上滚）
+//   2. 内存环形缓冲 0x4000..0x4EFF（60 槽 × 64 字节，计数在 0x4F00）
+//      —— `log` 命令可翻看完整历史，不受屏幕滚动限制
 //
 // 本文件中没有一行 C，也没有一行汇编——所有指令都由 Ds 编译器生成。
 
 // ---------- VGA ----------
-// 3 参数限制：字符与颜色打包  cp = ch | (color << 8)
 fn vga_put2(row: i32, col: i32, cp: i32) -> i32 {
     let base = 753664 + row * 160 + col * 2
     store8(base, cp & 255)
@@ -62,7 +66,47 @@ fn hexc(n: i32) -> i32 {
     return 87 + n
 }
 
-// ---------- 日志区 ----------
+// ---------- 内存日志环 ----------
+// 0x4000 起 60 槽 × 64 字节；0x4F00 存已写入的条数
+fn logstore(s: *u8) -> i32 {
+    let n = load32(20224)
+    let base = 16384 + (n & 63) * 64
+    let i = 0
+    let c = 1
+    while c != 0 {
+        c = load8(s + i)
+        if c == 0 {
+            store8(base + i, 0)
+            store32(20224, n + 1)
+            return 0
+        }
+        if i < 62 { store8(base + i, c) }
+        i = i + 1
+    }
+    return 0
+}
+
+fn dump_log() -> i32 {
+    let n = load32(20224)
+    let start = 0
+    if n > 60 { start = n - 60 }
+    let k = start
+    let r = 4
+    while r < 20 {
+        clear_row(r)
+        r = r + 1
+    }
+    r = 4
+    while k < n {
+        if r > 19 { return 0 }
+        puts_at(r, 0, 16384 + (k & 63) * 64)
+        r = r + 1
+        k = k + 1
+    }
+    return 0
+}
+
+// ---------- 屏幕日志（同时进内存环） ----------
 fn scroll_log() -> i32 {
     let r = 4
     while r < 19 {
@@ -81,6 +125,7 @@ fn scroll_log() -> i32 {
 }
 
 fn log(row: i32, s: *u8) -> i32 {
+    logstore(s)
     if row > 19 {
         scroll_log()
         row = 19
@@ -130,11 +175,11 @@ fn status_bar() -> i32 {
         vga_put2(24, c, 32 | 28672)
         c = c + 1
     }
-    puts_at(24, 1, "DsOS v0.8 | help / shutdown | ESC = halt")
+    puts_at(24, 1, "DsOS v0.9 | help log shutdown off | ESC = halt")
     return 0
 }
 
-// ---------- 扫描码 -> ASCII（只映射命令需要的字母） ----------
+// ---------- 扫描码 -> ASCII ----------
 fn sc2ascii(sc: i32) -> i32 {
     if sc == 35 { return 104 }          // h
     if sc == 18 { return 101 }          // e
@@ -147,34 +192,27 @@ fn sc2ascii(sc: i32) -> i32 {
     if sc == 24 { return 111 }          // o
     if sc == 17 { return 119 }          // w
     if sc == 49 { return 110 }          // n
+    if sc == 34 { return 103 }          // g  log
+    if sc == 33 { return 102 }          // f  off
     if sc == 57 { return 32 }           // 空格
     return 0
 }
 
 // ---------- ACPI S5 关机 ----------
 fn is_rsdp(a: i32) -> i32 {
-    if load8(a) != 82 { return 0 }
-    if load8(a + 1) != 83 { return 0 }
-    if load8(a + 2) != 68 { return 0 }
-    if load8(a + 3) != 32 { return 0 }
-    if load8(a + 4) != 80 { return 0 }
-    if load8(a + 5) != 84 { return 0 }
-    if load8(a + 6) != 82 { return 0 }
-    if load8(a + 7) != 32 { return 0 }
+    if load32(a) != 541348690 { return 0 }         // "RSD "
+    if load32(a + 4) != 542266448 { return 0 }     // "PTR "
     return 1
 }
 
 fn is_facp(a: i32) -> i32 {
-    if load8(a) != 70 { return 0 }
-    if load8(a + 1) != 65 { return 0 }
-    if load8(a + 2) != 67 { return 0 }
-    if load8(a + 3) != 80 { return 0 }
+    if load32(a) != 1346584902 { return 0 }        // "FACP"
     return 1
 }
 
 fn find_rsdp() -> i32 {
-    let a = 917504                      // 0xE0000
-    while a < 1048576 {                 // < 0x100000
+    let a = 917504
+    while a < 1048576 {
         if is_rsdp(a) == 1 { return a }
         a = a + 16
     }
@@ -199,17 +237,19 @@ fn find_fadt() -> i32 {
 fn shutdown() -> i32 {
     let f = find_fadt()
     if f == 0 { return 0 }
-    let pm = load32(f + 64) & 65535     // PM1a_CNT_BLK
+    let pm = load32(f + 64) & 65535
     if pm == 0 { return 0 }
-    let val = (5 << 10) | 8192          // SLP_TYPa(S5)=5 | SLP_EN
+    let val = (5 << 10) | 8192
     out8(pm, val & 255)
     out8(pm + 1, (val >> 8) & 255)
     return 1
 }
 
 fn _start() {
+    store32(20224, 0)                   // 日志环计数清零
+
     clear()
-    puts_at(0, 0, "DsOS v0.8  -  kernel compiled from Ds source")
+    puts_at(0, 0, "DsOS v0.9  -  kernel compiled from Ds source")
     puts_at(1, 0, "Ds toolchain -> x86-64 machine code")
     divider()
     status_bar()
@@ -219,6 +259,7 @@ fn _start() {
     row = log(row, "[boot] VGA 80x25 text mode ........... ok")
     row = log(row, "[boot] heartbeat timer (port 0x80) ... armed")
     row = log(row, "[boot] keyboard polling (0x64/0x60) .. armed")
+    row = log(row, "[boot] memory log ring 0x4000 ....... 60 slots")
     row = log(row, "[boot] ACPI S5 shutdown ............. ready")
     row = log(row, "[boot] type 'help' then Enter")
     row = log(row, "[boot] entering main loop")
@@ -241,24 +282,41 @@ fn _start() {
             if sc == 28 {                       // Enter
                 if nlen > 0 {
                     let known = 0
-                    if hsh == 50025 {           // "help"
+                    if hsh == 50025 {           // help
                         known = 1
                         row = log(row, "[cmd] help ------------------------")
-                        row = log(row, "[cmd]   help      show this text")
+                        row = log(row, "[cmd]   help      this text")
+                        row = log(row, "[cmd]   log       dump memory log ring")
                         row = log(row, "[cmd]   shutdown  ACPI S5 power off")
+                        row = log(row, "[cmd]   off       same as shutdown")
                         row = log(row, "[cmd]   ESC       halt CPU")
                         row = log(row, "[cmd] ------------------------------")
                     }
-                    if hsh == 47452 {           // "shutdown"
+                    if hsh == 55842 {           // log
+                        known = 1
+                        dump_log()
+                        puts_at(2, 0, "---- memory log ring --------------------------------")
+                        puts_at(20, 0, "---- end of log -------------------------------------")
+                        row = 20
+                    }
+                    if hsh == 58811 {           // off
+                        known = 1
+                        row = log(row, "[cmd] off -> ACPI S5")
+                        if shutdown() == 0 {
+                            row = log(row, "[acpi] no FADT, halting")
+                        }
+                        halt()
+                    }
+                    if hsh == 47452 {           // shutdown
                         known = 1
                         row = log(row, "[cmd] shutdown -> ACPI S5")
                         if shutdown() == 0 {
-                            row = log(row, "[acpi] no FADT found, halting")
+                            row = log(row, "[acpi] no FADT, halting")
                         }
                         halt()
                     }
                     if known == 0 {
-                        row = log(row, "[cmd] unknown command, type 'help'")
+                        row = log(row, "[cmd] unknown, type 'help'")
                     }
                     clear_row(22)
                     puts_at(22, 0, "cmd> ")
@@ -266,7 +324,7 @@ fn _start() {
                     nlen = 0
                 }
             } else {
-                if sc == 14 {                   // Backspace：清空输入
+                if sc == 14 {
                     hsh = 0
                     nlen = 0
                     clear_row(22)
