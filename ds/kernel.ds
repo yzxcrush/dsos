@@ -1,0 +1,66 @@
+// kernel.ds — 最小可运行的 DsOS 内核（全部字节由 Ds 源码经 Ds 工具链编译）
+//
+// 功能：
+//   1. 清屏
+//   2. 打印三行横幅
+//   3. 轮询 PS/2 键盘，把扫描码以十六进制回显
+//   4. ESC（扫描码 0x01）停机
+//
+// 编译：mini.py target=bare → 裸机 x86-64 机器码，由冻结的 stage2 加载到 0x9000 执行。
+// 本文件中没有一行 C，也没有一行汇编——所有指令都由 Ds 编译器生成。
+
+fn vga_put(row: i32, col: i32, ch: i32) -> i32 {
+    store8(753664 + row * 160 + col * 2, ch)
+    store8(753664 + row * 160 + col * 2 + 1, 15)
+    return 0
+}
+
+fn clear() -> i32 {
+    let i = 0
+    while i < 2000 {
+        store8(753664 + i * 2, 32)
+        store8(753664 + i * 2 + 1, 7)
+        i = i + 1
+    }
+    return 0
+}
+
+fn puts(row: i32, s: *u8) -> i32 {
+    let i = 0
+    let c = 1
+    while c != 0 {
+        c = load8(s + i)
+        if c == 0 { return 0 }
+        vga_put(row, i, c)
+        i = i + 1
+    }
+    return 0
+}
+
+fn hexc(n: i32) -> i32 {
+    if n < 10 { return 48 + n }
+    return 87 + n
+}
+
+fn _start() {
+    clear()
+    puts(0, "DsOS v0.6 - kernel compiled from Ds source")
+    puts(1, "Ds toolchain -> x86-64 machine code")
+    puts(2, "keys echo scancodes; ESC halts")
+    let row = 4
+    let col = 0
+    while 1 == 1 {
+        let st = in8(100)
+        if (st & 1) == 1 {
+            let sc = in8(96)
+            if sc == 1 { halt() }
+            if sc < 128 {
+                vga_put(row, col, hexc(sc >> 4))
+                col = col + 1
+                vga_put(row, col, hexc(sc & 15))
+                col = col + 1
+                if col > 70 { col = 0  row = row + 1 }
+            }
+        }
+    }
+}
