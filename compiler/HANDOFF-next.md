@@ -84,3 +84,55 @@ LetStmt: ['name','pattern','type','value','mutable','line','col']
 - 结构体声明 → `TypeDecl`，字段是 `FieldDecl`（不是字符串列表）
 - 局部变量声明带类型标注 → `LetStmt.type` = `TypeName`
 - 字段访问 `p.x` → **`AttrExpr`**（赋值时为 `AssignStmt.target = AttrExpr`）
+
+
+---
+
+# ⑤ 第十一圈（mcc9）状态：部分通过，有回归
+
+## 已通过（`verify_mcc9.py` A 部分 4/5）
+
+- 词法：换行 / 制表 / CR / `//` 注释
+- 条件：`&&` / `||` 链（**`if` 路径全过**）
+
+```
+[PASS] if a == 1 && b == 0 { a = 42 }        → 42
+[PASS] if a == 1 && b == 0 ... else { a=7 }  → 7
+[PASS] if a == 1 || b == 5 { a = 42 }        → 42
+[PASS] if a == 1 || b == 5 ... else { a=7 }  → 7
+[FAIL] while i < 3 && i < 9 { ... }          → 宿主野跳崩溃
+```
+
+## 未解决的回归（下一轮第一件事）
+
+**单条件 while 也崩了**（mcc7 时是好的）：
+
+```text
+let i = 0 while i < 3 { i = i + 1 } i = i + 0   → Invalid instruction
+```
+
+- 生成码在 `test eax,eax; jz 00` 之后被截断（len=38）
+- 宿主编译器 RIP 跳到自身代码中段 `0x3004`，源码 pos 停在循环体第一个语句
+- **`if` 同条件正常** → 条件码生成没问题，问题在 `while` 的回边或循环体路径
+
+定位方法：把 `emit_while` 换回 mcc7 版本（`let opc = parse_cond(s)` + `emit(opc)`）验证是否恢复；
+若恢复，则逐行替换成 mcc9 版本二分。
+
+## 自举探测（新结果）
+
+现在停在第 9 行：
+
+```ds
+fn advance() -> i32 { store32(12288, load32(12288) + 1)  return 0 }
+```
+
+两个缺口：
+1. **返回类型注解 `-> i32`**：`emit_fn` 只认 `fn name(params)`，`->` 会卡住
+2. **内存内建**：`store32/load32/store8/load8` 编译器不认识，而它自身源码全靠这些
+
+## 顺序
+
+1. 修 while 回归
+2. `-> 类型` 注解（跳过）
+3. 内存内建（编译成内联指令序列）
+4. 重跑自举探测
