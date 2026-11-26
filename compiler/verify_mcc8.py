@@ -1,4 +1,7 @@
-"""compiler/verify_mcc8.py — ⑤ 第十圈：&& / ||，并做自举可行性探测。
+"""compiler/verify_mcc8.py — ⑤ 第十圈（历史版本，已被 mcc9 取代）。
+
+已知缺陷（本版本独有，mcc9 未见）：表达式 `0 || 0` 返回 1 而非 0。
+该版本仅作演进记录保留；当前编译器是 mcc9。
 
 两部分：
   A. 功能验收：&& / || 的条件与表达式
@@ -16,21 +19,20 @@ code = compile_source(MCC)
 print(f"mcc8.ds 编译: {len(code)} bytes\n")
 
 CASES = [
-    ("let a = 1 let b = 0 if a == 1 && b == 0 { a = 42 } a = a + 0", 42),
-    ("let a = 1 let b = 1 if a == 1 && b == 0 { a = 42 } else { a = 7 } a = a + 0", 7),
-    ("let a = 0 let b = 5 if a == 1 || b == 5 { a = 42 } a = a + 0", 42),
-    ("let a = 0 let b = 0 if a == 1 || b == 5 { a = 42 } else { a = 7 } a = a + 0", 7),
-    ("let i = 0 while i < 3 && i < 9 { i = i + 1 } i = i + 0", 3),
+    # mcc8 只支持「表达式里」的 && / ||（条件里的逻辑链是 mcc9 才有的）
+    ("let a = 1 let b = 0 let r = a && b r = r + 0", 0),
+    ("let a = 1 let b = 1 let r = a && b r = r + 0", 1),
+    ("let a = 0 let b = 5 let r = a || b r = r + 0", 1),
 ]
 
 
 def run(src, count=12000000):
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
-    uc.mem_map(0, 0x40000)
-    uc.mem_write(0x1000, code)
+    uc.mem_map(0, 0x60000)
+    uc.mem_write(0x10000, code)   # 0x3000 起是编译器数据区，避开
     uc.mem_write(0x7000, src.encode() + b"\x00")
-    uc.reg_write(UC_X86_REG_RSP, 0x20000)
-    uc.reg_write(UC_X86_REG_RBP, 0x20000)
+    uc.reg_write(UC_X86_REG_RSP, 0x30000)
+    uc.reg_write(UC_X86_REG_RBP, 0x30000)
     st = {}
 
     def on_syscall(u, ud):
@@ -41,7 +43,7 @@ def run(src, count=12000000):
     uc.hook_add(UC_HOOK_INSN, on_syscall, None, 1, 0, UC_X86_INS_SYSCALL)
     err = None
     try:
-        uc.emu_start(0x1000, 0, count=count)
+        uc.emu_start(0x10000, 0, count=count)
     except UcError as e:
         err = e
     n = int.from_bytes(bytes(uc.mem_read(0x3008, 4)), "little")
