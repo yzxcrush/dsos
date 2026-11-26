@@ -21,16 +21,19 @@ CASES = [
     ("let a = 0 let b = 5 if a == 1 || b == 5 { a = 42 } a = a + 0", 42),
     ("let a = 0 let b = 0 if a == 1 || b == 5 { a = 42 } else { a = 7 } a = a + 0", 7),
     ("let i = 0 while i < 3 && i < 9 { i = i + 1 } i = i + 0", 3),
+    ("let i = 0 while i < 0 || i < 4 { i = i + 1 } i = i + 0", 4),
 ]
 
 
 def run(src, count=12000000):
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
-    uc.mem_map(0, 0x40000)
-    uc.mem_write(0x1000, code)
-    uc.mem_write(0x7000, src.encode() + b"\x00")
-    uc.reg_write(UC_X86_REG_RSP, 0x20000)
-    uc.reg_write(UC_X86_REG_RBP, 0x20000)
+    uc.mem_map(0, 0x60000)
+    # 宿主二进制放 0x8000：0x3000 起是编译器自己的全局数据区（放 0x1000 会自覆盖）
+    HOST = 0x10000
+    uc.mem_write(HOST, code)
+    uc.mem_write(0x20000, src.encode() + b"\x00")
+    uc.reg_write(UC_X86_REG_RSP, 0x30000)
+    uc.reg_write(UC_X86_REG_RBP, 0x30000)
     st = {}
 
     def on_syscall(u, ud):
@@ -41,7 +44,7 @@ def run(src, count=12000000):
     uc.hook_add(UC_HOOK_INSN, on_syscall, None, 1, 0, UC_X86_INS_SYSCALL)
     err = None
     try:
-        uc.emu_start(0x1000, 0, count=count)
+        uc.emu_start(0x10000, 0, count=count)
     except UcError as e:
         err = e
     n = int.from_bytes(bytes(uc.mem_read(0x3008, 4)), "little")

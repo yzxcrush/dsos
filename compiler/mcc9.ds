@@ -419,7 +419,7 @@ fn _start() {
     emit(72)  emit(137)  emit(229)
     emit(72)  emit(129)  emit(236)  emit32(64)
 
-    let s = 28672
+    let s = 131072
     while peek(s) != 0 { emit_stmt(s)  skip(s) }
 
     emit(72)  emit(137)  emit(236)
@@ -429,6 +429,6 @@ fn _start() {
 
     resolve_calls()
 
-    if load8(28672) == 64 { sys_exit(load32(12296)) }
+    if load8(131072) == 64 { sys_exit(load32(12296)) }
     sys_exit(run(24576))
 }
