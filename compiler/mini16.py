@@ -209,14 +209,15 @@ class Backend:
             a.e(b"\x66\xea" + struct.pack("<I", off & 0xFFFFFFFF) + struct.pack("<H", seg))
             return
         if name == "vga_mark_rm":
-            # 实模式标记：ES=0xB800，偏移 col*2
+            # 实模式标记：mov [disp16],imm 默认用 DS 段（不是 ES！），
+            # 所以要临时把 DS 指向 0xB800，写完再恢复。
             ch, col = lit(0), lit(1)
             a.e(b"\xb8\x00\xb8")                        # mov ax,0xB800
-            a.e(b"\x8e\xc0")                            # mov es,ax
+            a.e(b"\x8e\xd8")                            # mov ds,ax
             a.e(b"\xc6\x06" + struct.pack("<H", col * 2) + bytes([ch & 0xFF]))
             a.e(b"\xc6\x06" + struct.pack("<H", col * 2 + 1) + b"\x0f")
             a.e(b"\x31\xc0")                            # xor ax,ax
-            a.e(b"\x8e\xc0")                            # mov es,ax
+            a.e(b"\x8e\xd8")                            # mov ds,ax
             return
         if name == "set_flat":
             # 保护模式：把 DS/ES/SS 全部指向平坦数据段
@@ -237,6 +238,32 @@ class Backend:
             pos = len(self.a.b)
             target = (base + pos + 5) & 0xFFFF
             a.e(b"\xea" + struct.pack("<H", target) + struct.pack("<H", sel))
+            return
+        if name == "disk_write_chs":
+            # count, cyl, sec, head, seg, off —— AH=03 写扇区（保持 DL 不变）
+            cnt, cyl, sec, head = lit(0), lit(1), lit(2), lit(3)
+            seg, off = lit(4), lit(5)
+            a.e(b"\xb8" + struct.pack("<H", seg))
+            a.e(b"\x8e\xc0")                            # mov es,ax
+            a.e(b"\xb8" + struct.pack("<H", 0x0300 | (cnt & 0x3F)))   # AH=03, AL=count
+            a.e(b"\xb9" + struct.pack("<H", ((cyl & 0xFF) << 8) | (sec & 0x3F)))
+            a.e(b"\xb6" + bytes([head & 0xFF]))          # mov dh,head
+            a.e(b"\xbb" + struct.pack("<H", off))        # mov bx,off
+            a.e(b"\xcd\x13")                            # int 13h
+            return
+        if name == "disk_write_lba":
+            # 用 AH=43（扩展写，LBA），DAP 在 0x0500，避开 CHS 几何换算
+            lba, cnt, seg, off = lit(0), lit(1), lit(2), lit(3)
+            a.e(b"\xc7\x06\x00\x05" + struct.pack("<H", 16))       # DAP.size
+            a.e(b"\xc7\x06\x02\x05" + struct.pack("<H", cnt))      # count
+            a.e(b"\xc7\x06\x04\x05" + struct.pack("<H", off))      # offset
+            a.e(b"\xc7\x06\x06\x05" + struct.pack("<H", seg))      # segment
+            a.e(b"\x66\xc7\x06\x08\x05" + struct.pack("<I", lba)) # LBA 低
+            a.e(b"\x66\xc7\x06\x0c\x05" + struct.pack("<I", 0))   # LBA 高
+            a.e(b"\xbe\x00\x05")                                    # mov si,0x0500
+            a.e(b"\xb4\x43")                                         # mov ah,0x43
+            a.e(b"\xb0\x00")                                         # mov al,0（不校验）
+            a.e(b"\xcd\x13")                                         # int 13h
             return
         if name == "a20_fast":
             a.e(b"\xe4\x92")        # in al,0x92
@@ -264,7 +291,7 @@ class Backend:
         if name == "efer_set":
             a.e(b"\x66\xb8" + struct.pack("<I", lit(0)))        # mov eax,imm32
             a.e(b"\x66\x31\xd2")                               # xor edx,edx
-            a.e(b"\xb9" + struct.pack("<I", 0xC0000080))         # mov ecx,0xC0000080
+            a.e(b"\x66\xb9" + struct.pack("<I", 0xC0000080))     # mov ecx,0xC0000080（66 前缀！）
             a.e(b"\x0f\x30")                                    # wrmsr
             return
         if name == "far_jmp":

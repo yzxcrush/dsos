@@ -493,3 +493,83 @@ Python 才能从构建链里删除。
 引导链（MBR+stage2）    ：Python（真机确认可启动）；Ds 版为实验，未通过
 编译器                  ：Python（bootstrap 例外）
 ```
+
+
+---
+
+# QEMU 验证环境 + 日志落盘 thunk（已验证）
+
+## QEMU 装好了，验证能力质变
+
+`winget install SoftwareFreedomConservancy.QEMU` → QEMU 11.1.0。
+
+新增 `ds/verify_qemu_boot.py`：
+- `-display none` 无界面启动
+- 通过 monitor (TCP) 执行 `xp /4000xb 0xb8000` 直接读 VGA 文本缓冲区
+- 还原整屏文字并断言（横幅 / 版本号 / EXCEPTION）
+- QEMU 对**含中文的绝对路径**不友好 → 切到镜像目录用相对文件名
+
+这一下就能验证过去完全无法验证的东西：模式切换、远跳、IDT 投递、iretq。
+
+## 靠 QEMU 抓到并修掉的三个真 bug
+
+| bug | 症状 |
+|---|---|
+| `vga_mark_rm` 用 ES 段 | `mov [disp16],imm` 默认走 DS → 标记写进 RAM，屏幕无输出 |
+| `efer_set` 的 `mov ecx,imm32` 缺 `66` 前缀 | 16 位模式只吃 2 字节立即数，后续 `00 C0` 变 `add al,al`，指令流错位 → CR3 变成 0x18 |
+| 保护模式标记缺 `67` 地址长度前缀 | 16 位偏移装不下 0xB8000 |
+
+## Ds 引导链当前卡点（有证据）
+
+```text
+内存 0x8104 与编译产物一致        → 加载正确
+CS = 0008 ... CS16                → 已进 16 位保护模式
+DS/SS = 0018 平坦数据段            → 段重载成功
+CR4 = 0x20 (PAE), EFER = 0x100    → 长模式前置条件就绪
+EIP = 0x8173, HLT = 1             → 却落在 fall-through 的 halt
+```
+
+结论：`66 EA`（16 位模式下的 32 位操作数远跳）**不跳转**。按 Intel 规范，
+进 64 位代码段必须经过 32 位兼容模式。下一步做三段式 trampoline：
+实模式 → 16 位保护 → **32 位兼容** → 64 位。
+
+## 日志落盘：16 位 thunk 已端到端验证 ✅
+
+`ds/thunk16.ds`（Ds 编写，133 字节）：
+
+```text
+set_ds(4096) → 缓冲区 0x10000 头部写 "DSLOG1"
+disk_write_lba(6144, 8, 4096, 0)   → BIOS int 13h AH=43 写日志分区
+halt()
+```
+
+`ds/verify_thunk16.py` 的验证方式（**真写盘**，不是模拟）：
+
+```text
+1. 编译 thunk16.ds → 放在测试盘 LBA 0
+2. QEMU 启动，BIOS 执行 int 13h AH=43
+3. 退出后直接读测试镜像文件 LBA 6144
+   LBA 6144 处内容: 44 53 4c 4f 47 31 ... ascii=b'DSLOG1'
+[PASS] thunk 写入日志分区
+```
+
+注意两点：
+- 用 **LBA 扩展写（AH=43）** 而非 CHS——QEMU/BIOS 的 CHS 几何换算不可靠
+- 必须 `cache=writethrough`，否则 QEMU 的 writeback 缓存会让写入丢失
+
+## 还差的那一步：内核调用 thunk
+
+内核在长模式，要跳进这段 16 位代码必须做 **long → real 模式回退**：
+
+```text
+cli
+→ 64 位远跳到 32 位兼容段
+→ 清 CR0.PG
+→ 远跳到 16 位段
+→ 清 CR0.PE
+→ 远跳到实模式 thunk（0x0000:0xC000）
+→ thunk 写盘 → 重启或停机
+```
+
+这就是经典的「三段式降级」，需要给 mini.py 加 `far_jmp16` / `far_jmp32`，
+并在内核镜像里预留 thunk 的固定地址。QEMU 可以完整验证。
