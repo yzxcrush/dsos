@@ -1133,3 +1133,69 @@ _ovf2.py         找输出膨胀点（上限 80000 版需自己调）
 4. 函数体循环补 skip        9. emit_value 回滚重解析
 5. 槽访问 disp8→disp32     10. >> 解析顺序（已定位，未成功应用）
 ```
+
+
+---
+
+# 会话总结（30 轮目标周期，2026-11-27）
+
+## 目标完成度
+
+| 阶段 | 完成度 | 证据 |
+|---|---|---|
+| ① 编译器自举 | 70% | T1=14,212 正确；T2=15,269 生成；T3=40,983 完整生成；T2≠T3 |
+| ② 引导链 Ds 化 | 40% | Ds MBR(65B)+stage2(377B)；16 位部分 QEMU 全通；卡 16→64 远跳 |
+| ③ 构建脚本 Ds 化 | 0% | 未开始 |
+| 产品 100% Ds | ✅ | 内核 10,769 字节全 Ds，真机可启动 |
+
+## 最终稳定状态（务必保持）
+
+```text
+verify_mini   PASS (17)   verify_mcc10  PASS   verify_mbr16  PASS (3)
+构建           BUILD: PASS（默认安全路径）
+镜像 sha256    8f795ac1ff7bf8785006a3e3a0aaf1c7420fa54436a9000eabe811d1f12af00f
+U 盘           未被改动（与镜像一致）
+自举           T1=14,212 / T2=15,269 / T3=40,983 → 未达固定点
+```
+
+## 下一步的第一件事（新 session 直接执行）
+
+```text
+1. 打开 dsos-os/compiler/mcc10.ds，定位 emit_expr（307 行附近）
+2. 找 op == 62（>>）的两处 advance()
+3. 按本文件"认知三"同时修改两处
+4. **只测最小用例**：
+     fn f(s: i32) -> i32 { return s }
+     fn _start() { }
+     sys_exit(0)
+   → 用 _ratio.py 或 _finalexp.py 的 gen() 对比 T1 和 T2 的输出
+   → 要求完全一致（之前是 96 vs 96）
+5. 最小用例通过后再跑完整 verify_selfhost
+6. 若最小用例失败 → 说明修改吃错字符，用 capstone 反汇编 T2 的 emit32 核对
+```
+
+## 千万不要做的事
+
+```text
+✗ 不要把 verify_selfhost 的输出上限调回 20000（会误判为死循环）
+✗ 不要期待 T2/T3 是 15K 量级（正确约 41K）
+✗ 不要在 verify_mcc10 未 PASS 时继续（会漏回归）
+✗ 不要为验证编译器去刷 U 盘（内核编译不依赖 mcc10）
+```
+
+## 本会话交付物清单
+
+```text
+dsos-os/ds/kernel.ds              内核（100% Ds，v1.1）
+dsos-os/ds/mbr.ds                 Ds MBR（65 字节）
+dsos-os/ds/stage2.ds              Ds stage2（377 字节，16 位部分全通）
+dsos-os/ds/thunk16.ds             16 位写盘 thunk（验证通过）
+dsos-os/ds/build_dsos.py          构建（默认安全路径 + --ds-boot/--ds-mbr 实验）
+dsos-os/ds/flash_dsos.py          烧盘（守卫 + 重试）
+dsos-os/ds/logtool.py             日志分区工具
+dsos-os/ds/verify_*.py            7 个验收脚本
+dsos-os/compiler/mcc10.ds         Ds 写的编译器（自举进行中）
+dsos-os/compiler/HANDOFF-next.md  本文档
+dsos-os/docs/AI-GUIDE.md          面向 AI 的学习指南
+仓库 yzxcrush/dsos                已同步
+```
