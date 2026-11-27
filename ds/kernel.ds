@@ -199,6 +199,8 @@ fn sc2ascii(sc: i32) -> i32 {
     if sc == 23 { return 105 }          // i  irq
     if sc == 19 { return 114 }          // r  irq
     if sc == 16 { return 113 }          // q  irq
+    if sc == 30 { return 97 }           // a  savelog
+    if sc == 47 { return 118 }          // v  savelog
     if sc == 57 { return 32 }           // 空格
     return 0
 }
@@ -330,6 +332,24 @@ fn pit_init() -> i32 {
     return 0
 }
 
+// ---------- 日志落盘（热复位交接）----------
+// 把日志环 0x4000..0x4EFF（3840 B）拷到低端内存 0x10000，
+// 在 0x10010 写魔数 "DSLG"，然后软复位（端口 0x64 写 0xFE）。
+// 复位后 MBR 在实模式下检查魔数，用 int 13h AH=43 写进日志分区。
+fn savelog() -> i32 {
+    let i = 0
+    while i < 3840 {
+        store8(65536 + i, load8(16384 + i))
+        i = i + 1
+    }
+    store8(65552, 68)          // 'D' 0x10010
+    store8(65553, 83)          // 'S'
+    store8(65554, 76)          // 'L'
+    store8(65555, 71)          // 'G'
+    out8(100, 254)             // 0x64 <- 0xFE：暖复位
+    return 0
+}
+
 fn setup_idt() -> i32 {
     let cs = read_cs()
     if cs == 0 { cs = 24 }
@@ -410,6 +430,7 @@ fn _start() {
                         row = log(row, "[cmd]   off       same as shutdown")
                         row = log(row, "[cmd]   exc       trigger int3 (panic test)")
                         row = log(row, "[cmd]   irq       arm PIC+PIT, enable IRQ0")
+                        row = log(row, "[cmd]   savelog   save log to USB then reboot")
                         row = log(row, "[cmd]   ESC       halt CPU")
                         row = log(row, "[cmd] ------------------------------")
                     }
@@ -419,6 +440,12 @@ fn _start() {
                         puts_at(2, 0, "---- memory log ring --------------------------------")
                         puts_at(20, 0, "---- end of log -------------------------------------")
                         row = 20
+                    }
+                    if hsh == 14225 {           // savelog
+                        known = 1
+                        row = log(row, "[log] copying log to low memory 0x10000")
+                        row = log(row, "[log] rebooting; MBR will write it to disk")
+                        savelog()
                     }
                     if hsh == 52684 {           // irq
                         known = 1

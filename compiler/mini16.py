@@ -265,6 +265,10 @@ class Backend:
             a.e(b"\xb0\x00")                                         # mov al,0（不校验）
             a.e(b"\xcd\x13")                                         # int 13h
             return
+        if name == "read8":
+            a.e(b"\xa0" + struct.pack("<H", lit(0) & 0xFFFF))   # mov al,[disp16]
+            a.e(b"\x0f\xb6\xc0")                            # movzx ax,al
+            return
         if name == "a20_fast":
             a.e(b"\xe4\x92")        # in al,0x92
             a.e(b"\x0c\x02")        # or al,2
