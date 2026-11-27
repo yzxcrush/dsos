@@ -822,3 +822,54 @@ cd dsos-os/compiler && python3 verify_selfhost.py
 - `emit_factor` 的修改**必须只改一处**，改前先 `grep -n "peek_at(s, ln) == 40"` 确认位置
 - 每次改动后立刻跑 `verify_selfhost.py`，**T2 超过 20000 就说明又死循环了**（脚本有保护）
 - U 盘当前是可启动版本（sha256 `8f795ac1…`），**不要**为了验证编译器去动它
+
+
+---
+
+# 最新状态（回归已修，自举前进）
+
+## 已修：`call _start` 造成的回归
+
+```text
+问题：为自举加的"入口 call _start"，在源码没有 _start 函数时
+      fn_get 返回 0 → 位移算出负数 → call -16 → 无限递归 → 栈溢出
+修法：resolve_calls 里加保护
+      let target = fn_get(hh)
+      let disp = target - (pos + 4)
+      if target == 0 { disp = 0 }      // 位移 0 = call 到下一条指令（空操作）
+```
+
+验证：`verify_mcc10.py` → **3 项全 PASS**（回归消除）
+
+## 当前自举状态
+
+```text
+T1 = 12,737 字节   ✅ 正确
+T2 = 11,680 字节   ✅ 生成成功
+T3 = 22 字节       ⚠️ 比之前(3)有进步，但仍在中途崩
+```
+
+T3 走到 22 字节说明 T2 现在能进入编译流程并发出部分代码，
+剩余失败点在更靠后的构造上。
+
+## 下一步
+
+1. 用"读编译器修复表"的方法查 T2 的失败点：
+   - 跑 T2 编译自身，在崩溃时读 `pos`（0x3000）与 `len`（0x3008）
+   - 对照源码 pos 定位构造
+2. 若仍是括号/条件解析冲突 → 按本文档前面的"方案 A"重写 emit_expr
+3. 每次改动后跑：
+   - `verify_mcc10.py`（确保基础功能不回归）
+   - `verify_selfhost.py`（看 T2/T3）
+
+## 回归检查清单（重要）
+
+改 mcc10.ds 后**必须**跑这两个，缺一不可：
+
+```bash
+cd dsos-os/compiler
+python3 verify_mcc10.py      # 基础功能，3 项
+python3 verify_selfhost.py   # 自举，T2==T3
+```
+
+本次就是因为只跑 verify_selfhost 没跑 verify_mcc10，导致回归潜伏了两轮。

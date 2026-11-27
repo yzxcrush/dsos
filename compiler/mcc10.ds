@@ -113,6 +113,8 @@ fn resolve_calls() -> i32 {
         let pos = load32(278528 + i * 4)
         let target = fn_get(hh)
         let disp = target - (pos + 4)
+        // 未知函数（如源码没有 _start 时的入口调用）：位移置 0 = call 到下一条指令
+        if target == 0 { disp = 0 }
         store8(24576 + pos, disp as u8)
         store8(24576 + pos + 1, (disp >> 8) as u8)
         store8(24576 + pos + 2, (disp >> 16) as u8)
