@@ -198,6 +198,46 @@ class Backend:
             a.e(b"\xba" + struct.pack("<H", lit(0)))        # mov dx,port
             a.e(b"\xec")                                   # in al,dx
             return
+        if name == "putc_imm":
+            # BIOS 电传输出：mov ax,0x0E00|ch ; int 10h（仅实模式可用）
+            a.e(b"\xb8" + struct.pack("<H", 0x0E00 | (lit(0) & 0xFF)))
+            a.e(b"\xcd\x10")
+            return
+        if name == "far_jmp32":
+            # 66 EA off32 sel16 —— 用 32 位操作数远跳进入 64 位代码段
+            seg, off = lit(0), lit(1)
+            a.e(b"\x66\xea" + struct.pack("<I", off & 0xFFFFFFFF) + struct.pack("<H", seg))
+            return
+        if name == "vga_mark_rm":
+            # 实模式标记：ES=0xB800，偏移 col*2
+            ch, col = lit(0), lit(1)
+            a.e(b"\xb8\x00\xb8")                        # mov ax,0xB800
+            a.e(b"\x8e\xc0")                            # mov es,ax
+            a.e(b"\xc6\x06" + struct.pack("<H", col * 2) + bytes([ch & 0xFF]))
+            a.e(b"\xc6\x06" + struct.pack("<H", col * 2 + 1) + b"\x0f")
+            a.e(b"\x31\xc0")                            # xor ax,ax
+            a.e(b"\x8e\xc0")                            # mov es,ax
+            return
+        if name == "set_flat":
+            # 保护模式：把 DS/ES/SS 全部指向平坦数据段
+            sel = lit(0)
+            a.e(b"\xb8" + struct.pack("<H", sel & 0xFFFF))
+            for op in (b"\x8e\xd8", b"\x8e\xc0", b"\x8e\xd0"):   # mov ds/es/ss, ax
+                a.e(op)
+            return
+        if name == "vga_mark32":
+            # 保护模式标记：地址长度前缀 + disp32 直接写 0xB8000
+            ch, col = lit(0), lit(1)
+            a.e(b"\x67\xc6\x06" + struct.pack("<I", 0xB8000 + col * 2) + bytes([ch & 0xFF]))
+            a.e(b"\x67\xc6\x06" + struct.pack("<I", 0xB8000 + col * 2 + 1) + b"\x0f")
+            return
+        if name == "far_jmp_next":
+            # 远跳到本指令之后（用于 实模式 -> 16 位保护模式 的 CS 重载）
+            sel, base = lit(0), lit(1)
+            pos = len(self.a.b)
+            target = (base + pos + 5) & 0xFFFF
+            a.e(b"\xea" + struct.pack("<H", target) + struct.pack("<H", sel))
+            return
         if name == "a20_fast":
             a.e(b"\xe4\x92")        # in al,0x92
             a.e(b"\x0c\x02")        # or al,2

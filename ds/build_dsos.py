@@ -38,6 +38,14 @@ OUT = HERE / "dsos-ds.img"
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ds-boot", action="store_true",
+                    help="【实验】使用 Ds 编写的 MBR+stage2。真机从未成功启动过，"
+                         "unicorn 无法验证模式切换；默认关闭。")
+    args = ap.parse_args()
+    legacy = not args.ds_boot
+
     src = (HERE / "kernel.ds").read_text(encoding="utf-8")
     kern = compile_source(src, target="bare")
     print(f"kernel.ds 编译: {len(kern)} 字节（上限 {KERNEL_MAX}）")
@@ -65,14 +73,21 @@ def main():
           f"sha256={hashlib.sha256(boot).hexdigest()[:16]}…")
 
     img = bytearray(IMG_SIZE)
-    # MBR 区：Ds 编译的 MBR + 0x55AA，stage2 沿用存档
-    mbr_sector = bytearray(512)
-    mbr_sector[0:len(mbr)] = mbr
-    mbr_sector[510:512] = b"\x55\xaa"
-    img[0:512] = mbr_sector
-    s2_region = bytearray(4096)
-    s2_region[0:len(stage2)] = stage2
-    img[512:KERNEL_OFF] = s2_region          # Ds 编写的 stage2
+    if legacy:
+        # 默认：整条引导链用 bootchain.bin 里**真机确认可启动**的 Python 版本
+        print("引导链: Python 版（真机已确认可启动）")
+        img[0:KERNEL_OFF] = boot[0:KERNEL_OFF]
+        mbr_sector = None
+    else:
+        print("*** 警告：使用实验性 Ds 引导链，真机未验证通过！***")
+        # MBR 区：Ds 编译的 MBR + 0x55AA
+        mbr_sector = bytearray(512)
+        mbr_sector[0:len(mbr)] = mbr
+        mbr_sector[510:512] = b"\x55\xaa"
+        img[0:512] = mbr_sector
+        s2_region = bytearray(4096)
+        s2_region[0:len(stage2)] = stage2
+        img[512:KERNEL_OFF] = s2_region      # Ds 编写的 stage2
     img[KERNEL_OFF:KERNEL_OFF + len(kern)] = kern
 
     # ---- MBR 分区表 ----
@@ -111,8 +126,8 @@ def main():
 
     a = OUT.read_bytes()
     ok_sig = a[510:512] == bytes([0x55, 0xAA])
-    ok_mbr = a[0:len(mbr)] == mbr
-    ok_s2 = a[512:512 + len(stage2)] == stage2
+    ok_mbr = True if legacy else (a[0:len(mbr)] == mbr)
+    ok_s2 = True if legacy else (a[512:512 + len(stage2)] == stage2)
     ok_kern = a[KERNEL_OFF:KERNEL_OFF + len(kern)] == kern
     ok_size = len(a) == IMG_SIZE
     ok_part = (a[0x1BE] == 0x80 and a[0x1C2] == 0x0C
