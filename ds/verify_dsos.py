@@ -34,7 +34,7 @@ if len(CODE) > 12288:
 BASE = 0x9000
 KEY = {"h": 0x23, "e": 0x12, "l": 0x26, "p": 0x19, "s": 0x1F, "u": 0x16,
        "t": 0x14, "d": 0x20, "o": 0x18, "w": 0x11, "n": 0x31,
-       "\n": 0x1C, "\x1b": 0x01, "g": 0x22, "f": 0x21}
+       "\n": 0x1C, "\x1b": 0x01, "g": 0x22, "f": 0x21, "c": 0x2E, "x": 0x2D, "i": 0x17, "r": 0x13, "q": 0x10}
 
 
 def keys_of(s):
@@ -113,7 +113,7 @@ rip_off = uc.reg_read(UC_X86_REG_RIP) - BASE
 scr = screen(uc, 25)
 print("=== A. 启动 ===")
 print(scr)
-results["A 横幅"] = "DsOS v0.9" in row(uc, 0) and "Ds toolchain" in row(uc, 1)
+results["A 横幅"] = "DsOS v1.1" in row(uc, 0) and "Ds toolchain" in row(uc, 1)
 results["A 日志"] = "entering main loop" in scr and "ACPI S5" in scr
 results["A 心跳推进"] = hb1.startswith("[beat") and hb1 != hb2
 results["A ESC 停机"] = at_halt(rip_off)
@@ -169,6 +169,98 @@ results["F off 日志"] = "off -> ACPI S5" in scr
 results["F off ACPI 0x3400"] = (0x604, 0x00) in pm_writes and (0x605, 0x34) in pm_writes
 rip_off = uc.reg_read(UC_X86_REG_RIP) - BASE
 results["F off 停机"] = at_halt(rip_off)
+
+# ---------- G. 异常（IDT） ----------
+# 注意：unicorn 不执行 IDT 处理器（int 指令只触发 UC_HOOK_INTR）。
+# 因此分三层验证：IDT 表结构 / int3 是否执行 / 处理器代码本身能否跑通。
+uc, st = boot()
+intnos = []
+uc.hook_add(UC_HOOK_INTR, lambda u, intno, ud: intnos.append(intno))
+st["keys"] = keys_of("exc\n")
+run(uc, 20000000)
+
+# 1) IDT 表结构：读 vector 3 的门描述符
+gate = bytes(uc.mem_read(0x5000 + 3 * 16, 16))
+g_off = (int.from_bytes(gate[0:2], "little")
+         | (int.from_bytes(gate[6:8], "little") << 16)
+         | (int.from_bytes(gate[8:12], "little") << 32))
+g_sel = int.from_bytes(gate[2:4], "little")
+g_type = gate[5]
+idt_ok = g_type == 0x8E and g_sel == 0x18 and 0x9000 <= g_off < 0x9000 + len(CODE)
+print(f"\n=== G. 异常 ===")
+print(f"  IDT[3]: type={g_type:#x} sel={g_sel:#x} handler={g_off:#x}")
+print(f"  int3 触发的 intno: {intnos}")
+
+# 2) 处理器代码单独跑通（模拟 CPU 已进入处理器）
+uc2 = Uc(UC_ARCH_X86, UC_MODE_64)
+uc2.mem_map(0, 0x200000)
+uc2.mem_write(0x9000, CODE)
+uc2.reg_write(UC_X86_REG_RSP, 0x70000)
+uc2.reg_write(UC_X86_REG_RBP, 0x70000)
+uc2.reg_write(UC_X86_REG_RIP, g_off)
+try:
+    uc2.emu_start(g_off, 0, count=200000)
+except UcError:
+    pass
+raw = bytes(uc2.mem_read(0xB8000 + 22 * 160, 160))
+line22 = "".join(chr(raw[i]) if 32 <= raw[i] < 127 else " " for i in range(0, 160, 2)).rstrip()
+raw23 = bytes(uc2.mem_read(0xB8000 + 23 * 160, 160))
+line23 = "".join(chr(raw23[i]) if 32 <= raw23[i] < 127 else " " for i in range(0, 160, 2)).rstrip()
+handler_screen = line22 + " | " + line23
+handler_ok = "EXCEPTION" in line22 and at_halt(uc2.reg_read(UC_X86_REG_RIP) - 0x9000)
+print(f"  处理器直接输出: {handler_screen!r}")
+
+results["G IDT 门描述符正确"] = idt_ok
+results["G int3 已执行"] = 3 in intnos
+results["G 处理器代码可跑通"] = handler_ok
+results["G 命名异常"] = "BP breakpoint" in handler_screen
+
+# ---------- H. PIC/PIT 与时钟中断处理器 ----------
+uc, st = boot()
+st["keys"] = keys_of("irq\n")
+run(uc, 20000000)
+outs = st["outs"]
+print("\n=== H. IRQ 武装 ===")
+print(f"  端口写: {[(hex(p), hex(v)) for p, v in outs if p in (0x20,0x21,0xA0,0xA1,0x43,0x40)][:14]}")
+pic_ok = ((0x20, 0x11) in outs and (0x21, 0x20) in outs and
+          (0xA0, 0x11) in outs and (0xA1, 0x28) in outs and
+          (0x21, 0xFE) in outs)
+pit_ok = (0x43, 0x36) in outs and (0x40, 0x37) in outs and (0x40, 0x5D) in outs
+iflag = (uc.reg_read(UC_X86_REG_EFLAGS) >> 9) & 1
+results["H PIC 重映射到 0x20/0x28"] = pic_ok
+results["H PIT 50Hz 已编程"] = pit_ok
+results["H 中断已开启 (IF=1)"] = iflag == 1
+print(f"  PIC={pic_ok} PIT={pit_ok} IF={iflag}")
+
+# 用假中断帧直接调用时钟处理器，验证 iretq 返回路径
+gate32 = bytes(uc.mem_read(0x5000 + 32 * 16, 16))
+h_off = (int.from_bytes(gate32[0:2], "little")
+         | (int.from_bytes(gate32[6:8], "little") << 16)
+         | (int.from_bytes(gate32[8:12], "little") << 32))
+halt_addr = 0x9000 + halt_offs[0]
+FRAME = 0x6F00
+uc.mem_write(FRAME, halt_addr.to_bytes(8, "little"))          # iretq -> RIP
+uc.mem_write(FRAME + 8, (0x18).to_bytes(8, "little"))         # CS
+uc.mem_write(FRAME + 16, (0x202).to_bytes(8, "little"))       # RFLAGS (IF=1)
+tick_before = int.from_bytes(bytes(uc.mem_read(0x4F08, 4)), "little")
+outs.clear()
+uc.reg_write(UC_X86_REG_RSP, FRAME)
+uc.reg_write(UC_X86_REG_RBP, FRAME)
+uc.reg_write(UC_X86_REG_RIP, h_off)
+try:
+    uc.emu_start(h_off, 0, count=20000)
+except UcError:
+    pass
+tick_after = int.from_bytes(bytes(uc.mem_read(0x4F08, 4)), "little")
+eoi = (0x20, 0x20) in st["outs"]
+rip_now = uc.reg_read(UC_X86_REG_RIP)
+print(f"\n  时钟处理器: handler={h_off:#x} tick {tick_before} -> {tick_after} EOI={eoi} RIP={rip_now:#x} @RIP={bytes(uc.mem_read(rip_now,2)).hex()}")
+results["H 时钟处理器递增 tick"] = tick_after == tick_before + 1
+results["H 时钟处理器发 EOI"] = eoi
+# 注：unicorn 无 GDT，iretq 的特权级返回会抛异常（与 IDT 投递同类限制）。
+# 这里验证的是"处理器体执行完毕并到达 iretq"，返回路径标为未验证。
+rip_bytes = bytes(uc.mem_read(rip_now, 2))
+results["H 处理器执行到 iretq"] = rip_bytes == bytes([0x48, 0xCF])
 
 # ---------- D. 未知命令 ----------
 uc, st = boot()

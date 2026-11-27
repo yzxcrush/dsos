@@ -11,6 +11,7 @@
 | `build_dsos.py` | 编译 + 拼接冻结引导链 + 打 MBR 分区表 → `dsos-ds.img` |
 | `verify_dsos.py` | 15 项断言（unicorn 执行，不需要硬件） |
 | `flash_dsos.py` | 写 U 盘：守卫 → 清零 → 写入 → 回读比对 |
+| `logtool.py` | 日志分区工具：info / list / read / clear / selftest |
 | `bootchain.bin` | 冻结引导链（MBR + stage2，32 扇区版，4608 字节） |
 | `bootchain16.bin` | 原版引导链（16 扇区版，备用） |
 
@@ -47,6 +48,13 @@ kernel.ds 编译: 7001 字节（上限 12288）
 [image] 分区起点有引导扇区副本:   PASS
 sha256: d2f24a183b9a033956c0ece413dfd5d9f5a1d063faf2225895a87a4160411fc5
 ```
+
+## 磁盘分区
+
+| 分区 | 类型 | 起始 LBA | 大小 | 用途 |
+|---|---|---|---|---|
+| 1 | 0x0C | 2048 | 2 MiB | 引导（含 VBR 副本） |
+| 2 | 0xDA | 6144 | 8 MiB | 日志：256 槽 × 32 KiB，`logtool.py` 读写 |
 
 ## 内存布局（内核视角）
 

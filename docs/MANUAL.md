@@ -165,6 +165,73 @@ cmd>                                              ← 命令行
 | 能打字，但 `help` 没反应 | 只映射了命令需要的字母 | 确认只用了小写字母；回车键是否正常 |
 | `off` 后没断电 | 机器 ACPI 不支持 S5 或 FADT 结构不同 | 内核会退化为停机（画面冻结），属正常降级 |
 
+## 六·五、日志分区
+
+镜像已经分成**两个分区**，日志不再和引导区混在一起：
+
+| 分区 | 类型 | 起始 LBA | 大小 | 用途 |
+|---|---|---|---|---|
+| 1 | `0x0C` | 2048 | 2 MiB | 引导（分区起点放了一份 VBR 副本，兼容"从活动分区启动"的 BIOS） |
+| 2 | `0xDA` | 6144 | 8 MiB | **日志专用**：256 槽 × 32 KiB |
+
+### 槽格式
+
+```text
++0   magic  "DSLG"
++4   u32 seq      会话序号（越大越新）
++8   u32 len      正文长度
++12  u32 crc32    正文 CRC32
++16  u32 flags
++20  u32 tick     内核心跳节拍
++24  u32 reserved
++28  u32 reserved
++32  text         正文（最多 32736 字节）
+```
+
+### PC 端工具
+
+```bash
+cd ds
+python3 logtool.py info                      # 分区信息 + 有效槽数
+python3 logtool.py list                      # 列出所有有效槽
+python3 logtool.py read                      # 打印最新一条日志
+python3 logtool.py read --seq 3              # 打印指定序号
+python3 logtool.py clear                     # 清空日志分区（8 MiB 归零）
+python3 logtool.py selftest                  # 写入→读回→CRC 校验（会覆盖最新槽）
+
+# 直接对 U 盘操作（注意盘号！）
+python3 logtool.py info --device 1
+python3 logtool.py read --device 1
+python3 logtool.py clear --device 1
+```
+
+实机自检输出：
+
+```text
+自检：写入 → 读回 → 校验（\\.\PhysicalDrive1）
+  写入 seq=1 槽=1 长度=97
+  读回 seq=1 crc=OK
+  内容一致: True
+RESULT: PASS
+```
+
+### 当前状态：分区就绪，写入端待接
+
+| 项 | 状态 |
+|---|---|
+| 分区表与槽格式 | ✅ 已实现，PC 端读写/校验/清空全部通过 |
+| PC 端读取日志 | ✅ `logtool.py read` |
+| **内核运行时写日志到分区** | ❌ 未实现 |
+
+最后一项缺的仍然是同一件事：**内核在长模式下无法调用 BIOS 写盘**。
+两条可行路线：
+
+1. **stage2 实模式写入**（推荐）：stage2 启动时就用 `int 13h` 写一条启动记录进分区
+2. **热复位交接**：内核心跳时把日志留在 RAM + 魔数，然后 `out 0x64, 0xFE` 软复位；
+   stage2 下次启动时检测魔数，若存在就把 RAM 里的日志写进分区
+
+两者都只能在真机上验证（unicorn 不模拟复位与模式切换）。
+
 ## 七、自己构建
 
 ```bash

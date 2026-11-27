@@ -19,7 +19,19 @@ from mini import compile_source
 BOOTCHAIN = HERE / "bootchain.bin"      # 4608 B：MBR + stage2
 KERNEL_OFF = 4608                       # 0x9000 - 0x8000 + 512
 KERNEL_MAX = 12288   # 32 扇区加载：0x9000..0xBFFF
-IMG_SIZE = 1474560
+
+# ---- 分区布局（LBA） ----
+#   LBA 0        MBR（引导代码 + 分区表）
+#   LBA 1..33    引导代码区（stage1 一次读 32 扇区：stage2 + 内核）
+#   LBA 2048     分区1「引导」2 MiB   —— 分区起点放一份 VBR 副本
+#   LBA 6144     分区2「日志」8 MiB   —— 日志专用分区，槽大小 32 KiB
+BOOT_PART_LBA = 2048
+BOOT_PART_SECS = 4096
+LOG_PART_LBA = 6144
+LOG_PART_SECS = 16384
+SLOT_BYTES = 32 * 1024
+SLOT_COUNT = LOG_PART_SECS * 512 // SLOT_BYTES
+IMG_SIZE = (LOG_PART_LBA + LOG_PART_SECS) * 512
 OUT = HERE / "dsos-ds.img"
 
 
@@ -40,35 +52,55 @@ def main():
     img[0:KERNEL_OFF] = boot
     img[KERNEL_OFF:KERNEL_OFF + len(kern)] = kern
 
-    # ---- MBR 分区项：让 BIOS 把这块盘识别成可引导的 USB 硬盘 ----
-    # 很多机器在分区表全零时不把设备列进启动菜单，直接跳过进 Windows。
-    PART_LBA = 2048                      # 1 MiB 对齐
-    part = bytearray(16)
-    part[0] = 0x80                       # 活动分区
-    part[1:4] = bytes([0x20, 0x21, 0x00])   # 起始 CHS: head32/sec33/cyl0
-    part[4] = 0x0C                          # 类型: FAT32 LBA (通用)
-    part[5:8] = bytes([0x2D, 0x2D, 0x00])   # 结束 CHS
-    part[8:12] = PART_LBA.to_bytes(4, "little")
-    part[12:16] = (IMG_SIZE // 512 - PART_LBA).to_bytes(4, "little")
-    img[0x1BE:0x1CE] = part
+    # ---- MBR 分区表 ----
+    # 分区1「引导」：让 BIOS 把这块盘识别成可引导的 USB 硬盘
+    #                （分区表全零时很多机器会直接跳过它进 Windows）
+    # 分区2「日志」：日志专用，不碰引导区，可单独擦除
+    def chs(lba):
+        sec = lba % 63 + 1
+        head = (lba // 63) % 255
+        cyl = lba // (63 * 255)
+        return bytes([head & 0xFF, (sec & 0x3F) | ((cyl >> 2) & 0xC0), cyl & 0xFF])
+
+    p1 = bytearray(16)
+    p1[0] = 0x80
+    p1[1:4] = chs(BOOT_PART_LBA)
+    p1[4] = 0x0C                       # FAT32 LBA（通用可引导类型）
+    p1[5:8] = chs(BOOT_PART_LBA + BOOT_PART_SECS - 1)
+    p1[8:12] = BOOT_PART_LBA.to_bytes(4, "little")
+    p1[12:16] = BOOT_PART_SECS.to_bytes(4, "little")
+
+    p2 = bytearray(16)
+    p2[0] = 0x00                       # 非活动分区（只存日志）
+    p2[1:4] = chs(LOG_PART_LBA)
+    p2[4] = 0xDA                       # 自定义类型：DsOS 日志分区
+    p2[5:8] = chs(LOG_PART_LBA + LOG_PART_SECS - 1)
+    p2[8:12] = LOG_PART_LBA.to_bytes(4, "little")
+    p2[12:16] = LOG_PART_SECS.to_bytes(4, "little")
+
+    img[0x1BE:0x1CE] = p1
+    img[0x1CE:0x1DE] = p2
     img[0x1B8:0x1BC] = (0x44534F44).to_bytes(4, "little")   # 磁盘签名 "DSOD"
-    # 分区起点再放一份引导扇区：兼容"启动活动分区 VBR"的 BIOS
+    # 引导分区起点再放一份引导扇区：兼容"启动活动分区 VBR"的 BIOS
     # 注意：必须在改完分区表之后复制，保证两份一致
-    if PART_LBA * 512 + 512 <= IMG_SIZE:
-        img[PART_LBA * 512:PART_LBA * 512 + 512] = bytes(img[0:512])
+    img[BOOT_PART_LBA * 512:BOOT_PART_LBA * 512 + 512] = bytes(img[0:512])
     OUT.write_bytes(bytes(img))
 
     a = OUT.read_bytes()
     ok_sig = a[510:512] == bytes([0x55, 0xAA])
     ok_kern = a[KERNEL_OFF:KERNEL_OFF + len(kern)] == kern
     ok_size = len(a) == IMG_SIZE
-    ok_part = a[0x1BE] == 0x80 and a[0x1C2] == 0x0C
-    ok_vbr = a[PART_LBA * 512:PART_LBA * 512 + 512] == a[0:512]
+    ok_part = (a[0x1BE] == 0x80 and a[0x1C2] == 0x0C
+               and a[0x1CE] == 0x00 and a[0x1D2] == 0xDA)
+    ok_vbr = a[BOOT_PART_LBA * 512:BOOT_PART_LBA * 512 + 512] == a[0:512]
     print(f"[image] 引导签名 0x55AA:        {'PASS' if ok_sig else 'FAIL'}")
     print(f"[image] 内核槽字节 == Ds 输出:   {'PASS' if ok_kern else 'FAIL'}")
     print(f"[image] 镜像大小 {IMG_SIZE}:      {'PASS' if ok_size else 'FAIL'}")
-    print(f"[image] MBR 分区项(0x0C):        {'PASS' if ok_part else 'FAIL'}")
-    print(f"[image] 分区起点有引导扇区副本:   {'PASS' if ok_vbr else 'FAIL'}")
+    print(f"[image] 双分区表(引导+日志):      {'PASS' if ok_part else 'FAIL'}")
+    print(f"[image] 引导分区有 VBR 副本:      {'PASS' if ok_vbr else 'FAIL'}")
+    print(f"[image] 引导分区 LBA {BOOT_PART_LBA} × {BOOT_PART_SECS} 扇区")
+    print(f"[image] 日志分区 LBA {LOG_PART_LBA} × {LOG_PART_SECS} 扇区"
+          f"（{SLOT_COUNT} 槽 × {SLOT_BYTES//1024} KiB）")
     print(f"\n镜像: {OUT}")
     print(f"sha256: {hashlib.sha256(a).hexdigest()}")
     ok = ok_sig and ok_kern and ok_size and ok_part and ok_vbr

@@ -1,4 +1,4 @@
-// kernel.ds — DsOS 最小内核 v0.9（全部字节由 Ds 源码经 Ds 工具链编译）
+// kernel.ds — DsOS 最小内核 v1.1（全部字节由 Ds 源码经 Ds 工具链编译）
 //
 // 屏幕布局（80x25）：
 //   row 0    标题
@@ -175,7 +175,7 @@ fn status_bar() -> i32 {
         vga_put2(24, c, 32 | 28672)
         c = c + 1
     }
-    puts_at(24, 1, "DsOS v0.9 | help log shutdown off | ESC = halt")
+    puts_at(24, 1, "DsOS v1.1 | help log shutdown off irq | ESC = halt")
     return 0
 }
 
@@ -194,6 +194,11 @@ fn sc2ascii(sc: i32) -> i32 {
     if sc == 49 { return 110 }          // n
     if sc == 34 { return 103 }          // g  log
     if sc == 33 { return 102 }          // f  off
+    if sc == 46 { return 99 }           // c  exc
+    if sc == 45 { return 120 }          // x  exc
+    if sc == 23 { return 105 }          // i  irq
+    if sc == 19 { return 114 }          // r  irq
+    if sc == 16 { return 113 }          // q  irq
     if sc == 57 { return 32 }           // 空格
     return 0
 }
@@ -245,14 +250,118 @@ fn shutdown() -> i32 {
     return 1
 }
 
+// ---------- IDT / 异常处理 ----------
+// IDT 位于 0x5000（256 项 × 16 字节，只填 0..31 号异常）
+// IDTR 描述符位于 0x4F20（limit u16 + base u64）
+fn idt_set(vec: i32, off: i32, cs: i32) -> i32 {
+    let base = 20480 + vec * 16
+    store16(base, off & 65535)               // offset[15:0]
+    store16(base + 2, cs)                    // selector
+    store8(base + 4, 0)                      // IST
+    store8(base + 5, 142)                    // 0x8E: P=1, DPL=0, 64 位中断门
+    store16(base + 6, (off >> 16) & 65535)   // offset[31:16]
+    store32(base + 8, (off >> 32) & 4294967295)
+    store32(base + 12, 0)
+    return 0
+}
+
+// 异常名（命名报告，便于定位）
+fn exc_name(v: i32) -> *u8 {
+    if v == 0 { return "0  #DE divide error" }
+    if v == 3 { return "3  #BP breakpoint" }
+    if v == 6 { return "6  #UD invalid opcode" }
+    if v == 8 { return "8  #DF double fault" }
+    if v == 13 { return "13 #GP general protection" }
+    if v == 14 { return "14 #PF page fault" }
+    return "?? unknown exception"
+}
+
+fn exc_common(vec: i32) -> i32 {
+    let c = 0
+    while c < 80 {
+        vga_put2(22, c, 32 | 28672)
+        c = c + 1
+    }
+    puts_at(22, 1, "*** EXCEPTION ***")
+    puts_at(23, 1, exc_name(vec))
+    logstore("[exc] exception caught -> halted")
+    halt()
+    return 0
+}
+
+fn exc_0() -> i32 { return exc_common(0) }
+fn exc_3() -> i32 { return exc_common(3) }
+fn exc_6() -> i32 { return exc_common(6) }
+fn exc_8() -> i32 { return exc_common(8) }
+fn exc_13() -> i32 { return exc_common(13) }
+fn exc_14() -> i32 { return exc_common(14) }
+fn exc_other() -> i32 { return exc_common(99) }
+
+// ---------- 时钟中断（IRQ0 / vector 0x20） ----------
+fn timer_irq() -> i32 {
+    push_all()
+    store32(20232, load32(20232) + 1)      // 0x4F08 节拍计数
+    out8(32, 32)                            // EOI -> 主片
+    pop_all()
+    irq_return()                            // mov rsp,rbp; pop rbp; iretq
+    return 0
+}
+
+// ---------- PIC 重映射 ----------
+fn pic_remap() -> i32 {
+    out8(32, 17)                            // ICW1: ICW4 + 边沿
+    out8(160, 17)
+    out8(33, 32)                            // ICW2: 主片向量基址 0x20
+    out8(161, 40)                           // 从片基址 0x28
+    out8(33, 4)                             // ICW3: 从片接在 IRQ2
+    out8(161, 2)
+    out8(33, 1)                             // ICW4: 8086 模式
+    out8(161, 1)
+    out8(33, 254)                           // 只开 IRQ0（bit0=0）
+    out8(161, 255)                          // 屏蔽从片全部
+    return 0
+}
+
+// ---------- PIT 时钟（50 Hz） ----------
+fn pit_init() -> i32 {
+    out8(67, 54)                            // 0x43=0x36: 通道0, lo/hi, 模式3
+    out8(64, 55)                            // 分频 23863 = 0x5D37 低字节
+    out8(64, 93)                            // 高字节
+    return 0
+}
+
+fn setup_idt() -> i32 {
+    let cs = read_cs()
+    if cs == 0 { cs = 24 }
+    let v = 0
+    while v < 32 {
+        let h = fnaddr(exc_other)
+        if v == 0 { h = fnaddr(exc_0) }
+        if v == 3 { h = fnaddr(exc_3) }
+        if v == 6 { h = fnaddr(exc_6) }
+        if v == 8 { h = fnaddr(exc_8) }
+        if v == 13 { h = fnaddr(exc_13) }
+        if v == 14 { h = fnaddr(exc_14) }
+        idt_set(v, h, cs)
+        v = v + 1
+    }
+    idt_set(32, fnaddr(timer_irq), cs)      // IRQ0
+    store16(20256, 767)                     // IDTR limit = 48*16-1
+    store32(20258, 20480)                   // base = 0x5000
+    store32(20262, 0)
+    lidt(20256)
+    return 0
+}
+
 fn _start() {
     store32(20224, 0)                   // 日志环计数清零
 
     clear()
-    puts_at(0, 0, "DsOS v0.9  -  kernel compiled from Ds source")
+    puts_at(0, 0, "DsOS v1.1  -  kernel compiled from Ds source")
     puts_at(1, 0, "Ds toolchain -> x86-64 machine code")
     divider()
     status_bar()
+    setup_idt()
 
     let row = 4
     row = log(row, "[boot] clear screen .................. ok")
@@ -260,6 +369,7 @@ fn _start() {
     row = log(row, "[boot] heartbeat timer (port 0x80) ... armed")
     row = log(row, "[boot] keyboard polling (0x64/0x60) .. armed")
     row = log(row, "[boot] memory log ring 0x4000 ....... 60 slots")
+    row = log(row, "[boot] IDT 256 gates @0x5000 ......... loaded")
     row = log(row, "[boot] ACPI S5 shutdown ............. ready")
     row = log(row, "[boot] type 'help' then Enter")
     row = log(row, "[boot] entering main loop")
@@ -273,6 +383,15 @@ fn _start() {
     while 1 == 1 {
         beat = beat + 1
         heartbeat(beat)
+        if (beat & 7) == 0 {
+            let t = load32(20232)
+            puts_at(24, 52, "[tick ")
+            vga_put(24, 58, hexc((t >> 12) & 15))
+            vga_put(24, 59, hexc((t >> 8) & 15))
+            vga_put(24, 60, hexc((t >> 4) & 15))
+            vga_put(24, 61, hexc(t & 15))
+            puts_at(24, 62, " ]")
+        }
         delay(30000)
 
         let st = in8(100)
@@ -289,6 +408,8 @@ fn _start() {
                         row = log(row, "[cmd]   log       dump memory log ring")
                         row = log(row, "[cmd]   shutdown  ACPI S5 power off")
                         row = log(row, "[cmd]   off       same as shutdown")
+                        row = log(row, "[cmd]   exc       trigger int3 (panic test)")
+                        row = log(row, "[cmd]   irq       arm PIC+PIT, enable IRQ0")
                         row = log(row, "[cmd]   ESC       halt CPU")
                         row = log(row, "[cmd] ------------------------------")
                     }
@@ -298,6 +419,20 @@ fn _start() {
                         puts_at(2, 0, "---- memory log ring --------------------------------")
                         puts_at(20, 0, "---- end of log -------------------------------------")
                         row = 20
+                    }
+                    if hsh == 52684 {           // irq
+                        known = 1
+                        row = log(row, "[irq] remapping PIC to 0x20/0x28")
+                        pic_remap()
+                        row = log(row, "[irq] PIT channel 0 @ 50 Hz")
+                        pit_init()
+                        row = log(row, "[irq] enabling interrupts (sti)")
+                        sti()
+                    }
+                    if hsh == 48512 {           // exc
+                        known = 1
+                        row = log(row, "[cmd] exc -> int3")
+                        int3()
                     }
                     if hsh == 58811 {           // off
                         known = 1
