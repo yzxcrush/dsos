@@ -348,6 +348,20 @@ fn emit_expr(s: *u8) -> i32 {
     return 0
 }
 
+// 表达式或条件：先按表达式解析，若停在比较运算符上则回滚重解析
+fn emit_value(s: *u8) -> i32 {
+    let sp = load32(12288)
+    let sl = load32(12296)
+    emit_expr(s)
+    skip(s)
+    if peek(s) == 60 || peek(s) == 62 || peek(s) == 61 {
+        store32(12288, sp)
+        store32(12296, sl)
+        parse_cond(s)
+    }
+    return 0
+}
+
 fn emit_let(s: *u8) -> i32 {
     skip_ident(s)
     skip(s)
@@ -356,16 +370,9 @@ fn emit_let(s: *u8) -> i32 {
     skip(s)
     advance()
     skip(s)
-    if is_digit(peek(s)) == 1 {
-        let n = number(s)
-        let slot = 0 - (4 * (load32(409600) + 1))
-        sym_set(hh, slot)
-        emit(184)  emit32(n)  emit(137)  emit(133)  emit32(slot)
-        return 0
-    }
     let slot2 = 0 - (4 * (load32(409600) + 1))
     sym_set(hh, slot2)
-    emit_expr(s)
+    emit_value(s)
     emit(137)  emit(133)  emit32(slot2)
     return 0
 }
@@ -582,8 +589,8 @@ fn emit_fn(s: *u8) -> i32 {
     emit(85)
     emit(72)  emit(137)  emit(229)
     emit(72)  emit(129)  emit(236)  emit32(4096)
-    if nparams >= 1 { emit(137)  emit(189)  emit32(-4) }
-    if nparams >= 2 { emit(137)  emit(181)  emit32(-8) }
+    if nparams >= 1 { emit(137)  emit(189)  emit32(0 -4) }
+    if nparams >= 2 { emit(137)  emit(181)  emit32(0 -8) }
 
     let ret_base = load32(335872)
     skip(s)

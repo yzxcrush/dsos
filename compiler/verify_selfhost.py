@@ -52,7 +52,7 @@ def compile_with(compiler, label):
             u.emu_stop()
 
     def on_wr(u, access, addr, size, value, ud):
-        if addr == 0x3008 and value > 20000:
+        if addr == 0x3008 and value > 80000:
             st["overflow"] = True
             u.emu_stop()
 
@@ -67,7 +67,7 @@ def compile_with(compiler, label):
     n = int.from_bytes(bytes(uc.mem_read(LENVAR, 4)), "little")
     out = bytes(uc.mem_read(OUTBUF, n)) if 0 < n <= 0x40000 else b""
     if st.get("overflow"):
-        print(f"  {label}: !! 输出超 20000，已强制停止（pos={int.from_bytes(bytes(uc.mem_read(0x3000,4)),'little')}）")
+        print(f"  {label}: !! 输出超 80000，已强制停止（pos={int.from_bytes(bytes(uc.mem_read(0x3000,4)),'little')}）")
     print(f"  {label}: 生成 {n} 字节  stop={'outbuf' if st['halt'] else st['syscall']}  err={err}")
     return out
 
