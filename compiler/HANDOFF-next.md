@@ -873,3 +873,103 @@ python3 verify_selfhost.py   # 自举，T2==T3
 ```
 
 本次就是因为只跑 verify_selfhost 没跑 verify_mcc10，导致回归潜伏了两轮。
+
+
+---
+
+# 自举调试交接（第 11 轮，2026-11-27）
+
+## 当前状态
+
+```text
+verify_mcc10:  PASS（3 项基础功能，无回归）
+T1 = 14,054 字节   T0(Python mini.py) 编译 mcc10.ds
+T2 = 15,122 字节   T1 编译 mcc10.ds（成功）
+T3 = 68 字节       T2 编译 mcc10.ds（失败）
+T2 执行到 pos=494 后 rip=0x0（ret 弹出空/错地址）
+```
+
+## 已修复的 6 个 bug（1-11 轮）
+
+| # | bug | 修法 |
+|---|---|---|
+| 1 | 符号表重置在参数注册之后（参数被抹掉） | 重置移到参数循环之前 |
+| 2 | `je rel8` 溢出 ±127（if 体过长） | `0F 84` + 4 字节回填 |
+| 3 | `je rel8` 溢出（while） | 同上 |
+| 4 | `jmp rel8` 溢出（while 回跳） | `E9` + 4 字节回填 |
+| 5 | 函数体循环未跳过 `}` 前的空白 | 循环前加 `skip(s)` |
+| 6 | 槽访问 disp8 截断（>63 变量） | 统一 disp32：`8B 85` / `89 85` |
+
+**重要**：所有跳转现在都是 rel32，rel8 类 bug 已根治。
+
+## 当前卡点（第 8 轮证据）
+
+```asm
+0x0135f2: mov eax, [rbp]        ← 槽 0（应为 [rbp-4] 等）
+0x01361f: pop rbp               ← 弹出 4（保存的 rbp 被覆盖）
+0x0138dd: ret                   ← 弹到地址 0
+```
+
+## 本轮否定结果（重要线索）
+
+加了调试开关：`sym_get` 未命中时把 pos 写入 0x3C00。
+
+```ds
+fn sym_get(hh: i32) -> i32 {
+    ...
+    store32(15360, load32(12288))      // 调试：记录未命中位置
+    return 0
+}
+```
+
+运行结果：**该地址始终为 0 → sym_get 从未未命中**。
+
+**结论**：`[rbp]` 槽 0 不是符号查询失败造成的。候选原因：
+
+1. `slot = 0 - (4 * (load32(409600) + 1))` 里 `load32(409600)` 变成 -1 → slot=0
+2. 某处 `emit32(-4)` 实际发出了 0
+3. 参数存储写到了错误偏移
+4. 某个内建调用破坏了符号表计数
+
+## 下一步（接手直接做）
+
+```text
+1. 在 emit_let / emit_assign 里也加调试记录：
+   当 slot == 0 时把 pos 写到 0x3C04
+   → 直接定位是哪条 let/assign 算出 slot=0
+
+2. 若无记录 → 说明 [rbp] 来自 emit_factor 的变量读，
+   但 sym_get 未命中记录为 0 → 矛盾 → 检查 emit32 的负数处理
+   （mini.py 的 emit32 对负数是否正确写成 4 字节补码？）
+
+3. 检查 mini.py 的 emit32：
+   struct.pack("<I", v & 0xFFFFFFFF) → OK
+   若用了 "<i" 且值为负 → OK
+   若没做掩码 → 可能报错或写错
+```
+
+## 调试工具（都在 workspace）
+
+```text
+_ws\_trace.py      记录执行轨迹，找最后几条指令
+_ws\_dis3.py       capstone 反汇编 T2 崩溃点
+_ws\_rsp.py        trace rsp/rbp 变化，找栈失衡
+_ws\_dbgrun2.py    跑 T2 并读调试地址 0x3C00
+```
+
+（前缀 `_` 是临时脚本，在 `D:\文档\deepseek-harness\default-workspace\` 下）
+
+## U 盘状态
+
+```text
+可启动，sha256 8f795ac1ff7bf8785006a3e3a0aaf1c7420fa54436a9000eabe811d1f12af00f
+未被本 session 的编译器调试改动影响（内核由 mini.py 编译，mcc10 仅供自举实验）
+```
+
+## 下一步路线（目标整体）
+
+```text
+① 修完 mcc10 自举 → T2==T3 → 用 T2 编内核 → 删 mini.py
+② 引导链三段式（stage2 走 16→32→64）→ QEMU 验证 → 替换 4608 字节
+③ build/flash 脚本 Ds 化
+```

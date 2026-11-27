@@ -76,6 +76,7 @@ fn sym_get(hh: i32) -> i32 {
         if load32(393216 + i * 4) == hh { return load32(401408 + i * 4) }
         i = i + 1
     }
+    store32(15360, load32(12288))      // 调试：记录未命中时的源码位置
     return 0
 }
 
@@ -240,12 +241,41 @@ fn intr_sys_exit(s: *u8) -> i32 {
     return 0
 }
 
+// 从当前位置向前扫描到匹配的 ')'，判断括号内是否是"条件"
+// （深度 0 出现 < > = 即视为条件）
+fn has_cmp(s: *u8) -> i32 {
+    let p = load32(12288)
+    let depth = 0
+    let i = 0
+    while i < 400 {
+        let c = load8(s + p + i)
+        if c == 0 { return 0 }
+        if c == 40 { depth = depth + 1 }
+        if c == 41 {
+            depth = depth - 1
+            if depth < 0 { return 0 }
+        }
+        if depth == 0 {
+            if c == 60 || c == 62 || c == 61 { return 1 }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 fn emit_factor(s: *u8) -> i32 {
     skip(s)
     let c = peek(s)
     if is_digit(c) == 1 { let n = number(s)  emit(184)  emit32(n)  return 0 }
     let hh = hash_ident(s)
     let ln = ident_len(s)
+    if c == 40 {
+        advance()
+        if has_cmp(s) == 1 { parse_cond(s) } else { emit_expr(s) }
+        skip(s)
+        advance()
+        return 0
+    }
     if peek_at(s, ln) == 40 {
         // ---- 内建：编译器自身源码要用到它们，才能编译自己 ----
         if hh == 11013 { return intr_store8(s) }
@@ -257,9 +287,7 @@ fn emit_factor(s: *u8) -> i32 {
         return emit_call(s)
     }
     skip_ident(s)
-    emit(139)
-    emit(69)
-    emit(sym_get(hh))
+    emit(139)  emit(133)  emit32(sym_get(hh))
     return 0
 }
 
@@ -330,13 +358,13 @@ fn emit_let(s: *u8) -> i32 {
         let n = number(s)
         let slot = 0 - (4 * (load32(409600) + 1))
         sym_set(hh, slot)
-        emit(184)  emit32(n)  emit(137)  emit(69)  emit(slot)
+        emit(184)  emit32(n)  emit(137)  emit(133)  emit32(slot)
         return 0
     }
     let slot2 = 0 - (4 * (load32(409600) + 1))
     sym_set(hh, slot2)
     emit_expr(s)
-    emit(137)  emit(69)  emit(slot2)
+    emit(137)  emit(133)  emit32(slot2)
     return 0
 }
 
@@ -347,9 +375,7 @@ fn emit_assign(s: *u8) -> i32 {
     advance()
     skip(s)
     emit_expr(s)
-    emit(137)
-    emit(69)
-    emit(sym_get(hh))
+    emit(137)  emit(133)  emit32(sym_get(hh))
     return 0
 }
 
@@ -422,9 +448,10 @@ fn emit_if(s: *u8) -> i32 {
     skip(s)
     advance()
     emit(72)  emit(133)  emit(192)
-    emit(116)
+    emit(15)  emit(132)
     let jf = load32(12296)
-    emit(0)
+    emit(0)  emit(0)  emit(0)  emit(0)
+    skip(s)
     while peek(s) != 125 { emit_stmt(s)  skip(s) }
     advance()
     skip(s)
@@ -435,10 +462,15 @@ fn emit_if(s: *u8) -> i32 {
         let je = load32(12296)
         emit(0)  emit(0)  emit(0)  emit(0)
         let elstart = load32(12296)
-        store8(24576 + jf, (elstart - (jf + 1)) as u8)
+        let dj0 = elstart - (jf + 4)
+        store8(24576 + jf, dj0 as u8)
+        store8(24576 + jf + 1, (dj0 >> 8) as u8)
+        store8(24576 + jf + 2, (dj0 >> 16) as u8)
+        store8(24576 + jf + 3, (dj0 >> 24) as u8)
         skip_ident(s)
         skip(s)
         advance()
+        skip(s)
         while peek(s) != 125 { emit_stmt(s)  skip(s) }
         advance()
         let after = load32(12296)
@@ -450,7 +482,11 @@ fn emit_if(s: *u8) -> i32 {
         return 0
     }
     let after2 = load32(12296)
-    store8(24576 + jf, (after2 - (jf + 1)) as u8)
+    let dj1 = after2 - (jf + 4)
+    store8(24576 + jf, dj1 as u8)
+    store8(24576 + jf + 1, (dj1 >> 8) as u8)
+    store8(24576 + jf + 2, (dj1 >> 16) as u8)
+    store8(24576 + jf + 3, (dj1 >> 24) as u8)
     return 0
 }
 
@@ -462,16 +498,25 @@ fn emit_while(s: *u8) -> i32 {
     skip(s)
     advance()
     emit(72)  emit(133)  emit(192)
-    emit(116)
+    emit(15)  emit(132)
     let jf = load32(12296)
-    emit(0)
+    emit(0)  emit(0)  emit(0)  emit(0)
+    skip(s)
     while peek(s) != 125 { emit_stmt(s)  skip(s) }
     advance()
-    emit(235)
+    emit(233)                              // jmp rel32（rel8 会因循环体过长而截断）
     let jm = load32(12296)
-    emit((cond_pos - (jm + 1)) as u8)
+    let dj = cond_pos - (jm + 4)
+    emit(dj as u8)
+    emit((dj >> 8) as u8)
+    emit((dj >> 16) as u8)
+    emit((dj >> 24) as u8)
     let after = load32(12296)
-    store8(24576 + jf, (after - (jf + 1)) as u8)
+    let dw = after - (jf + 4)
+    store8(24576 + jf, dw as u8)
+    store8(24576 + jf + 1, (dw >> 8) as u8)
+    store8(24576 + jf + 2, (dw >> 16) as u8)
+    store8(24576 + jf + 3, (dw >> 24) as u8)
     return 0
 }
 
@@ -482,6 +527,7 @@ fn emit_fn(s: *u8) -> i32 {
     skip_ident(s)
     skip(s)
     advance()
+    store32(409600, 0)                 // 每个函数独立符号表（在参数注册之前）
     let nparams = 0
     skip(s)
     while peek(s) != 41 {
@@ -520,9 +566,8 @@ fn emit_fn(s: *u8) -> i32 {
     }
     advance()                              // 过 '{'
 
-    // _start 是程序入口：直接展开，不发"跳过" jmp
+    // 所有函数走同一路径（含 _start），入口由顶层序言后的 call _start 负责
     let is_entry = 0
-    if hh == 23917 { is_entry = 1 }
     let jmp_over = 0
     if is_entry == 0 {
         emit(233)
@@ -534,11 +579,12 @@ fn emit_fn(s: *u8) -> i32 {
     fn_set(hh, fn_off)
     emit(85)
     emit(72)  emit(137)  emit(229)
-    emit(72)  emit(129)  emit(236)  emit32(64)
-    if nparams >= 1 { emit(137)  emit(125)  emit(252) }
-    if nparams >= 2 { emit(137)  emit(117)  emit(248) }
+    emit(72)  emit(129)  emit(236)  emit32(4096)
+    if nparams >= 1 { emit(137)  emit(189)  emit32(-4) }
+    if nparams >= 2 { emit(137)  emit(181)  emit32(-8) }
 
     let ret_base = load32(335872)
+    skip(s)
     skip(s)
     while peek(s) != 125 { emit_stmt(s)  skip(s) }
     advance()
