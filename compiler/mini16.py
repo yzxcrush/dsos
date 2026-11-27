@@ -186,6 +186,18 @@ class Backend:
             a.e(b"\xbb" + struct.pack("<H", off))        # mov bx,off
             a.e(b"\xcd\x13")                            # int 13h
             return
+        if name == "mem_zero":
+            # 用 rep stosw 清零（ES 必须已置 0）
+            start, words = lit(0), lit(1)
+            a.e(b"\x31\xc0")                              # xor ax,ax
+            a.e(b"\xbf" + struct.pack("<H", start & 0xFFFF))  # mov di,start
+            a.e(b"\xb9" + struct.pack("<H", words & 0xFFFF))  # mov cx,words
+            a.e(b"\xf3\xab")                              # rep stosw
+            return
+        if name == "read_port":
+            a.e(b"\xba" + struct.pack("<H", lit(0)))        # mov dx,port
+            a.e(b"\xec")                                   # in al,dx
+            return
         if name == "a20_fast":
             a.e(b"\xe4\x92")        # in al,0x92
             a.e(b"\x0c\x02")        # or al,2
@@ -220,13 +232,13 @@ class Backend:
             a.e(b"\xea" + struct.pack("<H", off) + struct.pack("<H", seg))
             return
         if name == "write32":
-            a.e(b"\x66\xc7\x05" + struct.pack("<H", lit(0)) + struct.pack("<I", lit(1)))
+            a.e(b"\x66\xc7\x06" + struct.pack("<H", lit(0)) + struct.pack("<I", lit(1)))
             return
         if name == "write16":
-            a.e(b"\xc7\x05" + struct.pack("<H", lit(0)) + struct.pack("<H", lit(1)))
+            a.e(b"\xc7\x06" + struct.pack("<H", lit(0)) + struct.pack("<H", lit(1)))
             return
         if name == "write8":
-            a.e(b"\xc6\x05" + struct.pack("<H", lit(0)) + bytes([lit(1) & 0xFF]))
+            a.e(b"\xc6\x06" + struct.pack("<H", lit(0)) + bytes([lit(1) & 0xFF]))
             return
         if name == "out8":
             a.e(b"\xb0" + bytes([lit(1) & 0xFF]))   # mov al,imm8

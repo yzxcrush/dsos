@@ -326,3 +326,68 @@ stage2 的职责：
 
 Windows 会周期性扫描新分区的 USB 盘，导致裸设备写入中途 `EINVAL/EPERM`。
 `flash_dsos.py` 已加**分块重试 + 整轮重开句柄**（最多 8 次/块，3 轮整体重试）。
+
+
+---
+
+# 里程碑：引导链 100% 由 Ds 编译
+
+## 现状
+
+| 部分 | 字节 | 源码 | 由什么编译 | 状态 |
+|---|---|---|---|---|
+| MBR | 65 | `mbr.ds` | `mini16.py` | ✅ Ds |
+| stage2 | 189 | `stage2.ds` | `mini16.py` | ✅ Ds |
+| 内核 | 10234 | `kernel.ds` | `mini.py` | ✅ Ds |
+| **合计** | **10488** | | | **0 字节 Python 生成的机器码** |
+
+**Python 只剩编译器本身**（`mini.py` 33KB + `mini16.py`），属规则 9 的 bootstrap 例外。
+
+## 端到端验证（`verify_bootchain.py`）
+
+```text
+MBR 读盘参数正确            PASS   int13h: (lba=1, n=32, es=0x0800, bx=0)
+跳入 stage2                PASS
+页表就位                    PASS   PML4=0x2003 PDPT=0x3003 PD=0x83
+GDT 就位                    PASS   0x00AF9A000000FFFF
+分页已开                    PASS   CR0=0x80000011
+CR3/PAE 就位                PASS   CR3=0x1000 CR4=0x20
+内核已加载到 0x9000         PASS
+远跳就位（PG 已开）          PASS
+```
+
+## 未被模拟器覆盖的一步
+
+**CPU 从 16 位保护模式远跳进 64 位代码段**（`EA 00 90 08 00`）——unicorn 不能切换模式，
+只能真机确认。回退镜像：`dsos-ds-pystage2.img`（Python stage2 版，真机已确认可启动）。
+
+## stage2 做了什么（189 字节）
+
+```text
+a20_fast()                      端口 0x92 bit1
+mem_zero(0x1000, 0x1800)        清 12 KiB 页表区
+write32 三层页表                 PML4→PDPT→PD，2MiB 恒等映射
+write32 GDT + GDTR @0x5F00/0x5EF0
+lgdt_imm(0x5EF0)
+cr3_set(0x1000) cr4_set(0x20) efer_set(0x100) cr0_set(0x80000011)
+far_jmp(0x08, 0x9000)           进入 64 位，跳内核
+```
+
+## 本轮踩的坑
+
+| 坑 | 症状 |
+|---|---|
+| 16 位寻址 `modrm 0x05` 是 `[DI]`，`[disp16]` 要用 `0x06` | `write32` 全写到 DS:DI，页表/GDT 全是 0 |
+| GDT 描述符高 32 位常量算错 | 代码段变成 `0x00AFB300…`，CPU 加载后行为未定义 |
+| 页表项的 A/D 位由 CPU 走查置位 | 断言必须屏蔽 `0x60`，否则误报失败 |
+
+# 最后一块：编译器自举
+
+```text
+T0 = mini.py / mini16.py（Python，现在） 
+ → 用 Ds 写一个编译器，由 T0 编译出 T1
+ → T1 编译自己得 T2，T2 编译自己得 T3
+ → T2 == T3 时，Python 才能退出构建链
+```
+
+这是 ROADMAP 阶段 E/F，也是唯一还能让"含 py"成立的地方。

@@ -17,7 +17,8 @@ sys.path.insert(0, str(HERE.parent / "compiler"))
 from mini import compile_source
 
 BOOTCHAIN = HERE / "bootchain.bin"      # 4608 B：MBR + stage2（沿用 Python 版 stage2）
-MBR_SRC = HERE / "mbr.ds"              # MBR 已改为 Ds 源码
+MBR_SRC = HERE / "mbr.ds"              # MBR：Ds 源码
+STAGE2_SRC = HERE / "stage2.ds"        # stage2：Ds 源码
 KERNEL_OFF = 4608                       # 0x9000 - 0x8000 + 512
 KERNEL_MAX = 12288   # 32 扇区加载：0x9000..0xBFFF
 
@@ -51,6 +52,12 @@ def main():
     if len(mbr) > 510:
         sys.exit(f"FAIL: MBR {len(mbr)} > 510")
 
+    # stage2：用 Ds 编译的版本（原 Python 版仍在 bootchain.bin 里作回退）
+    stage2 = compile16(STAGE2_SRC.read_text(encoding="utf-8"))
+    print(f"stage2.ds 编译: {len(stage2)} 字节（Ds 编写，上限 4096）")
+    if len(stage2) > 4096:
+        sys.exit(f"FAIL: stage2 {len(stage2)} > 4096")
+
     boot = bytearray(BOOTCHAIN.read_bytes())
     assert len(boot) == KERNEL_OFF, f"bootchain.bin 应为 {KERNEL_OFF} 字节"
     assert boot[510:512] == bytes([0x55, 0xAA]), "bootchain 缺少 0x55AA"
@@ -63,7 +70,9 @@ def main():
     mbr_sector[0:len(mbr)] = mbr
     mbr_sector[510:512] = b"\x55\xaa"
     img[0:512] = mbr_sector
-    img[512:KERNEL_OFF] = boot[512:KERNEL_OFF]
+    s2_region = bytearray(4096)
+    s2_region[0:len(stage2)] = stage2
+    img[512:KERNEL_OFF] = s2_region          # Ds 编写的 stage2
     img[KERNEL_OFF:KERNEL_OFF + len(kern)] = kern
 
     # ---- MBR 分区表 ----
@@ -103,6 +112,7 @@ def main():
     a = OUT.read_bytes()
     ok_sig = a[510:512] == bytes([0x55, 0xAA])
     ok_mbr = a[0:len(mbr)] == mbr
+    ok_s2 = a[512:512 + len(stage2)] == stage2
     ok_kern = a[KERNEL_OFF:KERNEL_OFF + len(kern)] == kern
     ok_size = len(a) == IMG_SIZE
     ok_part = (a[0x1BE] == 0x80 and a[0x1C2] == 0x0C
@@ -110,6 +120,7 @@ def main():
     ok_vbr = a[BOOT_PART_LBA * 512:BOOT_PART_LBA * 512 + 512] == a[0:512]
     print(f"[image] 引导签名 0x55AA:        {'PASS' if ok_sig else 'FAIL'}")
     print(f"[image] MBR 字节 == Ds 输出:     {'PASS' if ok_mbr else 'FAIL'}")
+    print(f"[image] stage2 字节 == Ds 输出:   {'PASS' if ok_s2 else 'FAIL'}")
     print(f"[image] 内核槽字节 == Ds 输出:   {'PASS' if ok_kern else 'FAIL'}")
     print(f"[image] 镜像大小 {IMG_SIZE}:      {'PASS' if ok_size else 'FAIL'}")
     print(f"[image] 双分区表(引导+日志):      {'PASS' if ok_part else 'FAIL'}")
@@ -119,7 +130,7 @@ def main():
           f"（{SLOT_COUNT} 槽 × {SLOT_BYTES//1024} KiB）")
     print(f"\n镜像: {OUT}")
     print(f"sha256: {hashlib.sha256(a).hexdigest()}")
-    ok = ok_sig and ok_mbr and ok_kern and ok_size and ok_part and ok_vbr
+    ok = ok_sig and ok_mbr and ok_s2 and ok_kern and ok_size and ok_part and ok_vbr
     print("BUILD:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
