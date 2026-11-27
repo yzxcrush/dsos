@@ -64,8 +64,8 @@ fn skip_ident(s: *u8) -> i32 {
 // ---- 变量符号表 ----
 fn sym_set(hh: i32, off: i32) -> i32 {
     let n = load32(409600)
-    store32(393216 + n * 4, hh)
-    store32(401408 + n * 4, off)
+    store32(393216 + (n * 4), hh)
+    store32(401408 + (n * 4), off)
     store32(409600, n + 1)
     return 0
 }
@@ -73,7 +73,7 @@ fn sym_get(hh: i32) -> i32 {
     let n = load32(409600)
     let i = 0
     while i < n {
-        if load32(393216 + i * 4) == hh { return load32(401408 + i * 4) }
+        if load32(393216 + (i * 4)) == hh { return load32(401408 + (i * 4)) }
         i = i + 1
     }
     store32(15360, load32(12288))      // 调试：记录未命中时的源码位置
@@ -83,8 +83,8 @@ fn sym_get(hh: i32) -> i32 {
 // ---- 函数表 ----
 fn fn_set(hh: i32, off: i32) -> i32 {
     let n = load32(319488)
-    store32(303104 + n * 4, hh)
-    store32(311296 + n * 4, off)
+    store32(303104 + (n * 4), hh)
+    store32(311296 + (n * 4), off)
     store32(319488, n + 1)
     return 0
 }
@@ -92,7 +92,7 @@ fn fn_get(hh: i32) -> i32 {
     let n = load32(319488)
     let i = 0
     while i < n {
-        if load32(303104 + i * 4) == hh { return load32(311296 + i * 4) }
+        if load32(303104 + (i * 4)) == hh { return load32(311296 + (i * 4)) }
         i = i + 1
     }
     return 0
@@ -101,8 +101,8 @@ fn fn_get(hh: i32) -> i32 {
 // ---- 调用修复表 ----
 fn fix_add(hh: i32, pos: i32) -> i32 {
     let n = load32(294912)
-    store32(262144 + n * 4, hh)
-    store32(278528 + n * 4, pos)
+    store32(262144 + (n * 4), hh)
+    store32(278528 + (n * 4), pos)
     store32(294912, n + 1)
     return 0
 }
@@ -110,8 +110,8 @@ fn resolve_calls() -> i32 {
     let n = load32(294912)
     let i = 0
     while i < n {
-        let hh = load32(262144 + i * 4)
-        let pos = load32(278528 + i * 4)
+        let hh = load32(262144 + (i * 4))
+        let pos = load32(278528 + (i * 4))
         let target = fn_get(hh)
         let disp = target - (pos + 4)
         // 未知函数（如源码没有 _start 时的入口调用）：位移置 0 = call 到下一条指令
@@ -287,7 +287,9 @@ fn emit_factor(s: *u8) -> i32 {
         return emit_call(s)
     }
     skip_ident(s)
-    emit(139)  emit(133)  emit32(sym_get(hh))
+    let sl = sym_get(hh)
+    if sl == 0 { store32(15364, hh)  store32(15368, load32(12288)) }    // 调试：哈希 + pos
+    emit(139)  emit(133)  emit32(sl)
     return 0
 }
 
@@ -593,7 +595,7 @@ fn emit_fn(s: *u8) -> i32 {
     let ep = load32(12296)
     while load32(335872) > ret_base {
         store32(335872, load32(335872) - 1)
-        let rp2 = load32(327680 + load32(335872) * 4)
+        let rp2 = load32(327680 + (load32(335872) * 4))
         let rd = ep - (rp2 + 4)
         store8(24576 + rp2, rd as u8)
         store8(24576 + rp2 + 1, (rd >> 8) as u8)
@@ -618,7 +620,7 @@ fn emit_fn(s: *u8) -> i32 {
 
 // return 跳转修复表（0x3A00 位置 / 0x3B00 计数）
 fn ret_add(pos: i32) -> i32 {
-    store32(327680 + load32(335872) * 4, pos)
+    store32(327680 + (load32(335872) * 4), pos)
     store32(335872, load32(335872) + 1)
     return 0
 }
