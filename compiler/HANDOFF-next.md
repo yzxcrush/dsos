@@ -391,3 +391,55 @@ T0 = mini.py / mini16.py（Python，现在）
 ```
 
 这是 ROADMAP 阶段 E/F，也是唯一还能让"含 py"成立的地方。
+
+
+---
+
+# 最后一块 Python：自举进度（mcc10）
+
+## 已完成：编译器能力开始覆盖自身源码所需内建
+
+`mcc10.ds`（Ds 写的编译器）新增：
+
+| 能力 | 生成码 |
+|---|---|
+| `store8(addr,val)` | `mov eax,addr; push; mov eax,val; pop rbx; mov [rbx],al` |
+| `load8(addr)` | `movzx eax, byte [rax]` |
+| `store32(addr,val)` | `mov [rbx], eax` |
+| `load32(addr)` | `mov eax, [rax]` |
+| `sys_exit(v)` | `mov rdi,rax; mov eax,60; syscall` |
+| 表达式语句 | 标识符后紧跟 `(` 时按表达式处理，不再当赋值 |
+
+验证链（`verify_mcc10.py`）：
+
+```text
+mcc10.ds --(T0: Python mini.py)--> T1（10886 字节）
+T1 编译使用内建的源码 → 生成机器码 → 执行 → 断言
+[PASS] store8 + load8    want=65    got=65
+[PASS] store32 + load32  want=4242  got=4242
+[PASS] 内建 + 算术        want=42    got=42
+```
+
+这轮修的 bug：`store8(addr,val)` 第一个参数是**地址**，我按"值在前"生成，
+结果 `mov [rax],bl` 把地址当值写到了 0x41；改为 `mov [rbx],al` 后正确。
+
+## 距自举还差三样能力
+
+mcc10 的**自身源码**还用到了 mcc10 不认识的东西：
+
+| 缺口 | 源码里的例子 | 需要的生成码 |
+|---|---|---|
+| 位运算 `& \| ^ << >>` | `(n >> 12) & 15`、`h*33+c & 65535` | `and/or/xor rax,rbx`、`shl/shr` |
+| `run(addr)` | `sys_exit(run(24576))` | `call rax` |
+| 字符串字面量作值 | `puts_at(21,0,"[beat ")` 等 | `.rodata` + `lea rax,[rip+str]` |
+
+补完这三样，mcc10 的"能力集"才闭合到自己——那时才能跑：
+`T2 = T1(mcc10.ds)`、`T3 = T2(mcc10.ds)`，比对 `T2 == T3` 得到固定点，
+Python 才能从构建链里删除。
+
+## 当前构建链状态
+
+```text
+产品（跑在机器上的字节）：100% Ds 编译     ← 已达成
+编译器（生成那些字节的工具）：仍是 Python   ← 唯一剩余，需自举固定点
+```
