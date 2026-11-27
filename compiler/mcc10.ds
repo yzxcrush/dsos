@@ -218,6 +218,15 @@ fn intr_load32(s: *u8) -> i32 {
     return 0
 }
 
+// run(addr) -> call rax（执行指定地址的机器码）
+fn intr_run(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(255)  emit(208)               // call rax
+    close_paren(s)
+    return 0
+}
+
 // sys_exit(v) -> mov rdi,rax ; mov eax,60 ; syscall
 fn intr_sys_exit(s: *u8) -> i32 {
     skip_name_and_paren(s)
@@ -242,6 +251,7 @@ fn emit_factor(s: *u8) -> i32 {
         if hh == 35634 { return intr_store32(s) }
         if hh == 42181 { return intr_load32(s) }
         if hh == 7992 { return intr_sys_exit(s) }
+        if hh == 62581 { return intr_run(s) }
         return emit_call(s)
     }
     skip_ident(s)
@@ -265,7 +275,7 @@ fn emit_bool(is_or: i32) -> i32 {
 fn emit_expr(s: *u8) -> i32 {
     emit_factor(s)
     skip(s)
-    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || peek(s) == 124 || peek(s) == 38 {
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || peek(s) == 124 || peek(s) == 38 || (peek(s) == 62 && peek_at(s, 1) == 62) {
         let op = peek(s)
         advance()
         skip(s)
@@ -274,9 +284,21 @@ fn emit_expr(s: *u8) -> i32 {
         emit(91)
         if op == 43 { emit(1)  emit(216) } else {
             if op == 42 { emit(15)  emit(175)  emit(195) } else {
-                if op == 124 { emit_bool(1) } else {
-                    if op == 38 { emit_bool(0) } else {
-                        emit(41)  emit(195)  emit(137)  emit(216)
+                if op == 62 {
+                    // >> ：先吃掉第二个 '>'，再 mov rcx,rbx ; shr rax,cl
+                    advance()
+                    emit(48)  emit(137)  emit(217)          // mov rcx,rbx
+                    emit(48)  emit(211)  emit(232)          // shr rax,cl
+                } else {
+                    if op == 124 { emit_bool(1) } else {
+                        if op == 38 {
+                            if peek(s) == 38 { emit_bool(0) } else {
+                                // 单个 & 是**按位与**（&& 才是逻辑与）
+                                emit(48)  emit(33)  emit(216)   // and rax,rbx
+                            }
+                        } else {
+                            emit(41)  emit(195)  emit(137)  emit(216)
+                        }
                     }
                 }
             }
@@ -451,10 +473,23 @@ fn emit_fn(s: *u8) -> i32 {
         sym_set(ph, pslot)
         nparams = nparams + 1
         skip(s)
+        // 跳过参数类型标注：": *u8" / ": i32"
+        if peek(s) == 58 {
+            advance()
+            skip(s)
+            while is_ident(peek(s)) == 1 || peek(s) == 42 { advance()  skip(s) }
+        }
         if peek(s) == 44 { advance()  skip(s) }
     }
     advance()
     skip(s)
+    // 跳过返回类型 "-> i32"
+    if peek(s) == 45 {
+        advance()
+        advance()
+        skip(s)
+        while is_ident(peek(s)) == 1 || peek(s) == 42 { advance()  skip(s) }
+    }
     advance()
     // 顶层顺序执行时不能掉进函数体：先发 jmp rel32 跳过，函数末尾回填
     emit(233)
