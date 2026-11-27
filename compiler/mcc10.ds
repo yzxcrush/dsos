@@ -63,17 +63,17 @@ fn skip_ident(s: *u8) -> i32 {
 
 // ---- 变量符号表 ----
 fn sym_set(hh: i32, off: i32) -> i32 {
-    let n = load32(12832)
-    store32(12576 + n * 4, hh)
-    store32(12704 + n * 4, off)
-    store32(12832, n + 1)
+    let n = load32(409600)
+    store32(393216 + n * 4, hh)
+    store32(401408 + n * 4, off)
+    store32(409600, n + 1)
     return 0
 }
 fn sym_get(hh: i32) -> i32 {
-    let n = load32(12832)
+    let n = load32(409600)
     let i = 0
     while i < n {
-        if load32(12576 + i * 4) == hh { return load32(12704 + i * 4) }
+        if load32(393216 + i * 4) == hh { return load32(401408 + i * 4) }
         i = i + 1
     }
     return 0
@@ -81,17 +81,17 @@ fn sym_get(hh: i32) -> i32 {
 
 // ---- 函数表 ----
 fn fn_set(hh: i32, off: i32) -> i32 {
-    let n = load32(13824)
-    store32(13568 + n * 4, hh)
-    store32(13696 + n * 4, off)
-    store32(13824, n + 1)
+    let n = load32(319488)
+    store32(303104 + n * 4, hh)
+    store32(311296 + n * 4, off)
+    store32(319488, n + 1)
     return 0
 }
 fn fn_get(hh: i32) -> i32 {
-    let n = load32(13824)
+    let n = load32(319488)
     let i = 0
     while i < n {
-        if load32(13568 + i * 4) == hh { return load32(13696 + i * 4) }
+        if load32(303104 + i * 4) == hh { return load32(311296 + i * 4) }
         i = i + 1
     }
     return 0
@@ -99,18 +99,18 @@ fn fn_get(hh: i32) -> i32 {
 
 // ---- 调用修复表 ----
 fn fix_add(hh: i32, pos: i32) -> i32 {
-    let n = load32(13312)
-    store32(13056 + n * 4, hh)
-    store32(13184 + n * 4, pos)
-    store32(13312, n + 1)
+    let n = load32(294912)
+    store32(262144 + n * 4, hh)
+    store32(278528 + n * 4, pos)
+    store32(294912, n + 1)
     return 0
 }
 fn resolve_calls() -> i32 {
-    let n = load32(13312)
+    let n = load32(294912)
     let i = 0
     while i < n {
-        let hh = load32(13056 + i * 4)
-        let pos = load32(13184 + i * 4)
+        let hh = load32(262144 + i * 4)
+        let pos = load32(278528 + i * 4)
         let target = fn_get(hh)
         let disp = target - (pos + 4)
         store8(24576 + pos, disp as u8)
@@ -275,7 +275,7 @@ fn emit_bool(is_or: i32) -> i32 {
 fn emit_expr(s: *u8) -> i32 {
     emit_factor(s)
     skip(s)
-    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || peek(s) == 124 || peek(s) == 38 || (peek(s) == 62 && peek_at(s, 1) == 62) {
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || (peek(s) == 124 && peek_at(s, 1) != 124) || (peek(s) == 38 && peek_at(s, 1) != 38) || (peek(s) == 62 && peek_at(s, 1) == 62) {
         let op = peek(s)
         advance()
         skip(s)
@@ -287,14 +287,14 @@ fn emit_expr(s: *u8) -> i32 {
                 if op == 62 {
                     // >> ：先吃掉第二个 '>'，再 mov rcx,rbx ; shr rax,cl
                     advance()
-                    emit(48)  emit(137)  emit(217)          // mov rcx,rbx
-                    emit(48)  emit(211)  emit(232)          // shr rax,cl
+                    emit(72)  emit(137)  emit(217)          // mov rcx,rbx
+                    emit(72)  emit(211)  emit(232)          // shr rax,cl
                 } else {
                     if op == 124 { emit_bool(1) } else {
                         if op == 38 {
                             if peek(s) == 38 { emit_bool(0) } else {
                                 // 单个 & 是**按位与**（&& 才是逻辑与）
-                                emit(48)  emit(33)  emit(216)   // and rax,rbx
+                                emit(72)  emit(33)  emit(216)   // and rax,rbx
                             }
                         } else {
                             emit(41)  emit(195)  emit(137)  emit(216)
@@ -326,12 +326,12 @@ fn emit_let(s: *u8) -> i32 {
     skip(s)
     if is_digit(peek(s)) == 1 {
         let n = number(s)
-        let slot = 0 - (4 * (load32(12832) + 1))
+        let slot = 0 - (4 * (load32(409600) + 1))
         sym_set(hh, slot)
         emit(184)  emit32(n)  emit(137)  emit(69)  emit(slot)
         return 0
     }
-    let slot2 = 0 - (4 * (load32(12832) + 1))
+    let slot2 = 0 - (4 * (load32(409600) + 1))
     sym_set(hh, slot2)
     emit_expr(s)
     emit(137)  emit(69)  emit(slot2)
@@ -352,24 +352,18 @@ fn emit_assign(s: *u8) -> i32 {
 }
 
 fn emit_cmp_bool(s: *u8) -> i32 {
-    // 解析 lhs op rhs，emit 比较 + setcc，结果 eax = 0/1
-    skip(s)
-    let l_is_num = is_digit(peek(s))
-    let lv = 0
-    let lh = 0
-    if l_is_num == 1 { lv = number(s) } else { lh = hash_ident(s)  skip_ident(s) }
+    // 左值用完整表达式解析（这样 freak(s) == 58、a+b > c 都支持）
+    emit_expr(s)
+    emit(80)                           // push rax（左值）
     skip(s)
     let op1 = peek(s)
     advance()
     let op2 = 0
     if peek(s) == 61 { op2 = 61  advance() }
     skip(s)
-    let r_is_num = is_digit(peek(s))
-    let rv = 0
-    let rh = 0
-    if r_is_num == 1 { rv = number(s) } else { rh = hash_ident(s)  skip_ident(s) }
-    if l_is_num == 1 { emit(184)  emit32(lv) } else { emit(139)  emit(69)  emit(sym_get(lh)) }
-    if r_is_num == 1 { emit(61)  emit32(rv) } else { emit(59)  emit(69)  emit(sym_get(rh)) }
+    emit_expr(s)                       // 右值 -> rax
+    emit(91)                           // pop rbx（左值）
+    emit(72)  emit(57)  emit(195)      // cmp rbx, rax（左 - 右）
     if op1 == 60 {
         if op2 == 61 { emit(15)  emit(158)  emit(192) } else { emit(15)  emit(156)  emit(192) }
     } else {
@@ -379,12 +373,26 @@ fn emit_cmp_bool(s: *u8) -> i32 {
             if op1 == 61 { emit(15)  emit(148)  emit(192) } else { emit(15)  emit(149)  emit(192) }
         }
     }
-    emit(15)  emit(182)  emit(192)
+    emit(15)  emit(182)  emit(192)     // movzx eax, al
+    return 0
+}
+
+// 条件项：可能是普通比较，也可能是括号包起来的子条件
+fn cond_term(s: *u8) -> i32 {
+    skip(s)
+    if peek(s) == 40 {
+        advance()
+        parse_cond(s)
+        skip(s)
+        advance()
+    } else {
+        emit_cmp_bool(s)
+    }
     return 0
 }
 
 fn parse_cond(s: *u8) -> i32 {
-    emit_cmp_bool(s)
+    cond_term(s)
     skip(s)
     while peek(s) == 38 || peek(s) == 124 {
         let is_and = peek(s) == 38
@@ -392,7 +400,7 @@ fn parse_cond(s: *u8) -> i32 {
         advance()
         skip(s)
         emit(80)
-        emit_cmp_bool(s)
+        cond_term(s)
         emit(91)
         emit(72)  emit(133)  emit(219)
         emit(15)  emit(149)  emit(195)
@@ -485,7 +493,12 @@ fn emit_fn(s: *u8) -> i32 {
         if peek(s) == 58 {
             advance()
             skip(s)
-            while is_ident(peek(s)) == 1 || peek(s) == 42 { advance()  skip(s) }
+            let ty = 1
+            while ty == 1 {
+                ty = 0
+                if is_ident(peek(s)) == 1 { advance()  skip(s)  ty = 1 }
+                if peek(s) == 42 { advance()  skip(s)  ty = 1 }
+            }
         }
         if peek(s) == 44 { advance()  skip(s) }
     }
@@ -496,32 +509,69 @@ fn emit_fn(s: *u8) -> i32 {
         advance()
         advance()
         skip(s)
-        while is_ident(peek(s)) == 1 || peek(s) == 42 { advance()  skip(s) }
+        let rt = 1
+        while rt == 1 {
+            rt = 0
+            if is_ident(peek(s)) == 1 { advance()  skip(s)  rt = 1 }
+            if peek(s) == 42 { advance()  skip(s)  rt = 1 }
+        }
     }
-    advance()
-    // 顶层顺序执行时不能掉进函数体：先发 jmp rel32 跳过，函数末尾回填
-    emit(233)
-    let jmp_over = load32(12296)
-    emit(0)  emit(0)  emit(0)  emit(0)
+    advance()                              // 过 '{'
+
+    // _start 是程序入口：直接展开，不发"跳过" jmp
+    let is_entry = 0
+    if hh == 23917 { is_entry = 1 }
+    let jmp_over = 0
+    if is_entry == 0 {
+        emit(233)
+        jmp_over = load32(12296)
+        emit(0)  emit(0)  emit(0)  emit(0)
+    }
+
     let fn_off = load32(12296)
     fn_set(hh, fn_off)
     emit(85)
     emit(72)  emit(137)  emit(229)
     emit(72)  emit(129)  emit(236)  emit32(64)
-    // 参数槽是 4 字节，必须用 32 位存（48 前缀会写成 8 字节，覆盖保存的 rbp）
     if nparams >= 1 { emit(137)  emit(125)  emit(252) }
     if nparams >= 2 { emit(137)  emit(117)  emit(248) }
+
+    let ret_base = load32(335872)
+    skip(s)
     while peek(s) != 125 { emit_stmt(s)  skip(s) }
     advance()
+
+    // 回填本函数内所有 return 的 jmp → 尾声起点
+    let ep = load32(12296)
+    while load32(335872) > ret_base {
+        store32(335872, load32(335872) - 1)
+        let rp2 = load32(327680 + load32(335872) * 4)
+        let rd = ep - (rp2 + 4)
+        store8(24576 + rp2, rd as u8)
+        store8(24576 + rp2 + 1, (rd >> 8) as u8)
+        store8(24576 + rp2 + 2, (rd >> 16) as u8)
+        store8(24576 + rp2 + 3, (rd >> 24) as u8)
+    }
+
     emit(72)  emit(137)  emit(236)
     emit(93)
     emit(195)
-    let after = load32(12296)
-    let d = after - (jmp_over + 4)
-    store8(24576 + jmp_over, d as u8)
-    store8(24576 + jmp_over + 1, (d >> 8) as u8)
-    store8(24576 + jmp_over + 2, (d >> 16) as u8)
-    store8(24576 + jmp_over + 3, (d >> 24) as u8)
+
+    if is_entry == 0 {
+        let after = load32(12296)
+        let d = after - (jmp_over + 4)
+        store8(24576 + jmp_over, d as u8)
+        store8(24576 + jmp_over + 1, (d >> 8) as u8)
+        store8(24576 + jmp_over + 2, (d >> 16) as u8)
+        store8(24576 + jmp_over + 3, (d >> 24) as u8)
+    }
+    return 0
+}
+
+// return 跳转修复表（0x3A00 位置 / 0x3B00 计数）
+fn ret_add(pos: i32) -> i32 {
+    store32(327680 + load32(335872) * 4, pos)
+    store32(335872, load32(335872) + 1)
     return 0
 }
 
@@ -532,6 +582,17 @@ fn emit_stmt(s: *u8) -> i32 {
     if hh == 55525 { emit_let(s)  return 0 }
     if hh == 3567 { emit_if(s)  return 0 }
     if hh == 14425 { emit_while(s)  return 0 }
+    if hh == 24416 {
+        // return [expr]：先求值（结果留在 eax），再跳到函数尾声
+        skip_ident(s)
+        skip(s)
+        if peek(s) != 125 { emit_expr(s)  skip(s) }
+        emit(233)
+        let rp = load32(12296)
+        emit(0)  emit(0)  emit(0)  emit(0)
+        ret_add(rp)
+        return 0
+    }
     // 表达式语句：标识符后紧跟 '(' （函数调用 / 内建调用）
     let ln = ident_len(s)
     if peek_at(s, ln) == 40 { emit_expr(s)  return 0 }
@@ -542,13 +603,19 @@ fn emit_stmt(s: *u8) -> i32 {
 fn _start() {
     store32(12288, 0)
     store32(12296, 0)
-    store32(12832, 0)
-    store32(13312, 0)
-    store32(13824, 0)
+    store32(409600, 0)
+    store32(294912, 0)
+    store32(319488, 0)
+    store32(335872, 0)
 
     emit(85)
     emit(72)  emit(137)  emit(229)
     emit(72)  emit(129)  emit(236)  emit32(64)
+
+    // 程序入口：调用源程序里的 _start（前向引用，靠调用修复表回填）
+    emit(232)
+    fix_add(23917, load32(12296))
+    emit(0)  emit(0)  emit(0)  emit(0)
 
     let s = 131072
     while peek(s) != 0 { emit_stmt(s)  skip(s) }

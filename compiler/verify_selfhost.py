@@ -51,6 +51,12 @@ def compile_with(compiler, label):
             st["syscall"] = u.reg_read(UC_X86_REG_RDI)
             u.emu_stop()
 
+    def on_wr(u, access, addr, size, value, ud):
+        if addr == 0x3008 and value > 20000:
+            st["overflow"] = True
+            u.emu_stop()
+
+    uc.hook_add(UC_HOOK_MEM_WRITE, on_wr, None, 0x3008, 0x300B)
     uc.hook_add(UC_HOOK_CODE, on_code)
     uc.hook_add(UC_HOOK_INSN, on_sc, None, 1, 0, UC_X86_INS_SYSCALL)
     err = None
@@ -60,6 +66,8 @@ def compile_with(compiler, label):
         err = e
     n = int.from_bytes(bytes(uc.mem_read(LENVAR, 4)), "little")
     out = bytes(uc.mem_read(OUTBUF, n)) if 0 < n <= 0x40000 else b""
+    if st.get("overflow"):
+        print(f"  {label}: !! 输出超 20000，已强制停止（pos={int.from_bytes(bytes(uc.mem_read(0x3000,4)),'little')}）")
     print(f"  {label}: 生成 {n} 字节  stop={'outbuf' if st['halt'] else st['syscall']}  err={err}")
     return out
 
