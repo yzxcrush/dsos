@@ -305,6 +305,14 @@ fn emit_expr(s: *u8) -> i32 {
         }
         skip(s)
     }
+    // 类型转换 "expr as u8"：值已在 eax，只需跳过 "as <类型>"
+    skip(s)
+    while hash_ident(s) == 3316 {
+        skip_ident(s)
+        skip(s)
+        while is_ident(peek(s)) == 1 { advance() }
+        skip(s)
+    }
     return 0
 }
 
