@@ -263,3 +263,66 @@ ljmp 远跳          EA off16 seg16 / EA off32 seg16
 | rel8 也按 2 字节预留位移 | 每处跳转多塞一个 00，回填还覆盖下条指令首字节 |
 | `cmp ax,bx` 方向反了 | 左值在 bx、右值在 ax，应发 `cmp bx,ax` |
 | `if` 是表达式被包在 ExprStmt 里 | 不处理就报 `expr node IfExpr` |
+
+
+---
+
+# 「去除 Python」进度：MBR 已换成 Ds
+
+## 现状（按实际参与启动的机器码）
+
+| 部分 | 字节 | 由什么生成 | 状态 |
+|---|---|---|---|
+| MBR | **65** | **Ds（`mbr.ds` 经 `mini16.py`）** | ✅ **本轮完成** |
+| stage2 | 4096 | Python 发射器（`gen_shell.py`） | ⏳ 最后一个 Python 产物 |
+| 内核 | 10234 | Ds（`kernel.ds` 经 `mini.py`） | ✅ |
+
+→ **Ds 71.5% / Python 28.5%**（此前 69% / 31%）
+
+## MBR 做了什么（65 字节）
+
+```text
+set_ds(0) set_es(0) set_ss(0) mov_sp(0x7C00)
+disk_read_chs(32, 0, 2, 0, 0x0800, 0)   // LBA1..32 = CHS(0,0,2..33) → 0x8000
+far_jmp(0, 0x8000)
+```
+
+验证（`ds/verify_mbr.py`）：
+```text
+int13h 请求: [(1, 32, 2048, 0)]
+stage2 数据已落内存: PASS
+远跳到 stage2:      PASS
+0x55AA:            PASS
+```
+
+## mini16 已有的原语
+
+```text
+disk_read_chs / a20_fast / lgdt_imm / lidt_imm
+cr0_set / cr3_set / cr4_set / efer_set
+far_jmp / write32 / write16 / write8 / out8
+```
+
+**这些正好够写 stage2 了**——stage2 要做的（A20 / GDT / 页表 / 长模式）全部有对应原语。
+
+## 下一步：用 Ds 写 stage2（4096 字节，最后一块 Python）
+
+stage2 的职责：
+```text
+1. a20_fast()
+2. 写页表：0x1000 PML4[0]=0x2003；0x2000 PDPT[0]=0x3003；0x3000 PD[0]=0x0083（2MB 页）
+   （先把 0x1000..0x3FFF 共 3072 个 dword 清零）
+3. 写 GDT（null / 64 位代码 / 64 位数据）与 GDTR
+4. lgdt_imm(gdtr)
+5. cr3_set(0x1000); cr4_set(0x20); efer_set(0x100); cr0_set(0x80000001)
+6. 远跳到 64 位代码段（需要 far_jmp32 原语：66 EA off32 sel16）
+7. 64 位入口：设置段寄存器、栈，跳内核 0x9000
+```
+
+难点：16 位 → 保护模式 → 长模式的三段跳需要 `far_jmp32`（66 EA）与 `far_jmp16`（EA）。
+`far_jmp` 已有（16 位），需再加 32 位版本。
+
+## 烧盘时踩的坑（已修）
+
+Windows 会周期性扫描新分区的 USB 盘，导致裸设备写入中途 `EINVAL/EPERM`。
+`flash_dsos.py` 已加**分块重试 + 整轮重开句柄**（最多 8 次/块，3 轮整体重试）。

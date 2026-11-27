@@ -1,0 +1,27 @@
+// mbr.ds — DsOS 主引导记录（MBR），用 Ds 编写，16 位实模式
+//
+// 职责（只做最少的事）：
+//   1. 设置段寄存器与栈
+//   2. 用 BIOS int 13h AH=42（LBA 扩展读）把 stage2 + 内核读进内存
+//   3. 远跳到 stage2
+//
+// 职责之外的一切（A20 / GDT / 页表 / 长模式）都交给 stage2。
+// 本文件没有一行汇编——所有指令都由 mini16.py 生成。
+
+fn _start16() {
+    // ---- 段与栈 ----
+    set_ds(0)
+    set_es(0)
+    set_ss(0)
+    mov_sp(31744)                 // 0x7C00
+
+    // ---- 读 32 扇区（LBA 1..32）到 0x0000:0x8000 ----
+    // 覆盖 stage2(0x8000..0x8FFF) 与内核槽(0x9000..0xBFFF)
+    // LBA 1..32 = CHS(cyl=0, head=0, sector=2..33)，不跨磁道
+    disk_read_chs(32, 0, 2, 0, 2048, 0)      // count, cyl, sec, head, seg=0x0800, off=0
+
+    // ---- 跳到 stage2 ----
+    far_jmp(0, 32768)             // CS=0, IP=0x8000
+
+    halt()
+}

@@ -154,6 +154,85 @@ class Backend:
         if name == "sti":  a.e(b"\xfb"); return
         if name == "halt": a.e(b"\xfa\xf4\xeb\xfe"); return
         if name == "int3": a.e(b"\xcc"); return
+
+        # ---- 以下原语只接受字面量参数（MBR/stage2 里地址都是常量，省寄存器操作） ----
+        def lit(i):
+            v = getattr(n.args[i], "value", None)
+            if not isinstance(v, int):
+                raise NotImplementedError(f"{name} 的第 {i+1} 个参数必须是整数字面量")
+            return v
+
+        if name == "disk_read":
+            lba, cnt, seg, off = lit(0), lit(1), lit(2), lit(3)
+            a.e(b"\xc7\x06\x00\x05" + struct.pack("<H", 16))       # DAP.size = 16
+            a.e(b"\xc7\x06\x02\x05" + struct.pack("<H", cnt))      # count
+            a.e(b"\xc7\x06\x04\x05" + struct.pack("<H", off))      # offset
+            a.e(b"\xc7\x06\x06\x05" + struct.pack("<H", seg))      # segment
+            a.e(b"\x66\xc7\x06\x08\x05" + struct.pack("<I", lba)) # LBA 低 32 位
+            a.e(b"\x66\xc7\x06\x0c\x05" + struct.pack("<I", 0))   # LBA 高 32 位
+            a.e(b"\xbe\x00\x05")                                    # mov si,0x0500
+            a.e(b"\xb4\x42")                                         # mov ah,0x42
+            a.e(b"\xcd\x13")                                         # int 13h
+            return
+        if name == "disk_read_chs":
+            # count, cyl, sec, head, seg, off —— 全部字面量；保持 DL（启动盘号）不变
+            cnt, cyl, sec, head = lit(0), lit(1), lit(2), lit(3)
+            seg, off = lit(4), lit(5)
+            a.e(b"\xb8" + struct.pack("<H", seg))        # mov ax,seg
+            a.e(b"\x8e\xc0")                            # mov es,ax
+            a.e(b"\xb8" + struct.pack("<H", 0x0200 | (cnt & 0x3F)))   # AH=02, AL=count
+            a.e(b"\xb9" + struct.pack("<H", ((cyl & 0xFF) << 8) | (sec & 0x3F)))  # CH=cyl, CL=sec
+            a.e(b"\xb6" + bytes([head & 0xFF]))          # mov dh,head
+            a.e(b"\xbb" + struct.pack("<H", off))        # mov bx,off
+            a.e(b"\xcd\x13")                            # int 13h
+            return
+        if name == "a20_fast":
+            a.e(b"\xe4\x92")        # in al,0x92
+            a.e(b"\x0c\x02")        # or al,2
+            a.e(b"\xe6\x92")        # out 0x92,al
+            return
+        if name == "lgdt_imm":
+            a.e(b"\x0f\x01\x16" + struct.pack("<H", lit(0)))   # lgdt [disp16]
+            return
+        if name == "lidt_imm":
+            a.e(b"\x0f\x01\x1e" + struct.pack("<H", lit(0)))   # lidt [disp16]
+            return
+        if name == "cr0_set":
+            a.e(b"\x66\xb8" + struct.pack("<I", lit(0)))        # mov eax,imm32
+            a.e(b"\x0f\x22\xc0")                               # mov cr0,eax
+            return
+        if name == "cr3_set":
+            a.e(b"\x66\xb8" + struct.pack("<I", lit(0)))
+            a.e(b"\x0f\x22\xd8")                               # mov cr3,eax
+            return
+        if name == "cr4_set":
+            a.e(b"\x66\xb8" + struct.pack("<I", lit(0)))
+            a.e(b"\x0f\x22\xe0")                               # mov cr4,eax
+            return
+        if name == "efer_set":
+            a.e(b"\x66\xb8" + struct.pack("<I", lit(0)))        # mov eax,imm32
+            a.e(b"\x66\x31\xd2")                               # xor edx,edx
+            a.e(b"\xb9" + struct.pack("<I", 0xC0000080))         # mov ecx,0xC0000080
+            a.e(b"\x0f\x30")                                    # wrmsr
+            return
+        if name == "far_jmp":
+            seg, off = lit(0), lit(1)
+            a.e(b"\xea" + struct.pack("<H", off) + struct.pack("<H", seg))
+            return
+        if name == "write32":
+            a.e(b"\x66\xc7\x05" + struct.pack("<H", lit(0)) + struct.pack("<I", lit(1)))
+            return
+        if name == "write16":
+            a.e(b"\xc7\x05" + struct.pack("<H", lit(0)) + struct.pack("<H", lit(1)))
+            return
+        if name == "write8":
+            a.e(b"\xc6\x05" + struct.pack("<H", lit(0)) + bytes([lit(1) & 0xFF]))
+            return
+        if name == "out8":
+            a.e(b"\xb0" + bytes([lit(1) & 0xFF]))   # mov al,imm8
+            a.e(b"\xba" + struct.pack("<H", lit(0))) # mov dx,imm16
+            a.e(b"\xee")                            # out dx,al
+            return
         if name == "mov16":                          # mov [addr], val
             self.expr(n.args[1]); a.e(push_ax())
             self.expr(n.args[0]); a.e(b"\x89\xc3")   # bx = 地址

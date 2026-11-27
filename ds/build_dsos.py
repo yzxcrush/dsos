@@ -16,7 +16,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "compiler"))
 from mini import compile_source
 
-BOOTCHAIN = HERE / "bootchain.bin"      # 4608 B：MBR + stage2
+BOOTCHAIN = HERE / "bootchain.bin"      # 4608 B：MBR + stage2（沿用 Python 版 stage2）
+MBR_SRC = HERE / "mbr.ds"              # MBR 已改为 Ds 源码
 KERNEL_OFF = 4608                       # 0x9000 - 0x8000 + 512
 KERNEL_MAX = 12288   # 32 扇区加载：0x9000..0xBFFF
 
@@ -42,14 +43,27 @@ def main():
     if len(kern) > KERNEL_MAX:
         sys.exit(f"FAIL: 内核 {len(kern)} > 上限 {KERNEL_MAX}")
 
-    boot = BOOTCHAIN.read_bytes()
+    # MBR：用 Ds 编译的版本（96 字节），替换原来的 Python 生成版
+    sys.path.insert(0, str(HERE.parent / "compiler"))
+    from mini16 import compile_source as compile16
+    mbr = compile16(MBR_SRC.read_text(encoding="utf-8"))
+    print(f"mbr.ds 编译: {len(mbr)} 字节（Ds 编写）")
+    if len(mbr) > 510:
+        sys.exit(f"FAIL: MBR {len(mbr)} > 510")
+
+    boot = bytearray(BOOTCHAIN.read_bytes())
     assert len(boot) == KERNEL_OFF, f"bootchain.bin 应为 {KERNEL_OFF} 字节"
     assert boot[510:512] == bytes([0x55, 0xAA]), "bootchain 缺少 0x55AA"
     print(f"引导链存档: {BOOTCHAIN.name}  {len(boot)} B  "
           f"sha256={hashlib.sha256(boot).hexdigest()[:16]}…")
 
     img = bytearray(IMG_SIZE)
-    img[0:KERNEL_OFF] = boot
+    # MBR 区：Ds 编译的 MBR + 0x55AA，stage2 沿用存档
+    mbr_sector = bytearray(512)
+    mbr_sector[0:len(mbr)] = mbr
+    mbr_sector[510:512] = b"\x55\xaa"
+    img[0:512] = mbr_sector
+    img[512:KERNEL_OFF] = boot[512:KERNEL_OFF]
     img[KERNEL_OFF:KERNEL_OFF + len(kern)] = kern
 
     # ---- MBR 分区表 ----
@@ -88,12 +102,14 @@ def main():
 
     a = OUT.read_bytes()
     ok_sig = a[510:512] == bytes([0x55, 0xAA])
+    ok_mbr = a[0:len(mbr)] == mbr
     ok_kern = a[KERNEL_OFF:KERNEL_OFF + len(kern)] == kern
     ok_size = len(a) == IMG_SIZE
     ok_part = (a[0x1BE] == 0x80 and a[0x1C2] == 0x0C
                and a[0x1CE] == 0x00 and a[0x1D2] == 0xDA)
     ok_vbr = a[BOOT_PART_LBA * 512:BOOT_PART_LBA * 512 + 512] == a[0:512]
     print(f"[image] 引导签名 0x55AA:        {'PASS' if ok_sig else 'FAIL'}")
+    print(f"[image] MBR 字节 == Ds 输出:     {'PASS' if ok_mbr else 'FAIL'}")
     print(f"[image] 内核槽字节 == Ds 输出:   {'PASS' if ok_kern else 'FAIL'}")
     print(f"[image] 镜像大小 {IMG_SIZE}:      {'PASS' if ok_size else 'FAIL'}")
     print(f"[image] 双分区表(引导+日志):      {'PASS' if ok_part else 'FAIL'}")
@@ -103,7 +119,7 @@ def main():
           f"（{SLOT_COUNT} 槽 × {SLOT_BYTES//1024} KiB）")
     print(f"\n镜像: {OUT}")
     print(f"sha256: {hashlib.sha256(a).hexdigest()}")
-    ok = ok_sig and ok_kern and ok_size and ok_part and ok_vbr
+    ok = ok_sig and ok_mbr and ok_kern and ok_size and ok_part and ok_vbr
     print("BUILD:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

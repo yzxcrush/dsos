@@ -24,39 +24,51 @@ def main():
     print(f"镜像: {IMG.name}  {len(data)} B  sha256={hashlib.sha256(data).hexdigest()}")
     print(f"目标: {DEV}")
 
-    with open(DEV, "r+b", buffering=0) as f:
-        # 1) 清零
-        zero = b"\x00" * CHUNK
+    def write_all(f, blob, label):
+        """分块写入，遇 Windows 短暂锁定（EINVAL/EPERM）就重试。"""
         off = 0
-        while off < WIPE:
-            f.seek(off)
-            f.write(zero)
-            off += CHUNK
-        f.flush(); os.fsync(f.fileno())
-        print(f"已清零前 {WIPE // (1024*1024)} MiB")
+        tries = 0
+        while off < len(blob):
+            chunk = blob[off:off + CHUNK]
+            try:
+                f.seek(off)
+                f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+                off += len(chunk)
+                tries = 0
+            except OSError as e:
+                tries += 1
+                if tries > 8:
+                    raise
+                print(f"  {label}: 偏移 {off} 写入受阻（{e.errno}），重试 {tries}/8…")
+                time.sleep(1.0)
+        return True
 
-        # 2) 写入
-        t0 = time.time()
-        off = 0
-        while off < len(data):
-            chunk = data[off:off + CHUNK]
-            f.seek(off)
-            f.write(chunk)
-            off += len(chunk)
-        f.flush(); os.fsync(f.fileno())
-        print(f"已写入 {len(data)} B（{time.time() - t0:.2f}s）")
-
-        # 3) 回读比对
-        f.seek(0)
-        back = f.read(len(data))
-        ok = back == data
-        print(f"回读比对: {len(back)} B  match={ok}")
-
-        # 4) 抽样确认镜像之后是零
-        f.seek(len(data))
-        tail = f.read(4096)
-        ok_tail = tail == b"\x00" * 4096
-        print(f"镜像之后 4 KiB 全零: {ok_tail}")
+    for attempt in range(1, 4):
+        try:
+            with open(DEV, "r+b", buffering=0) as f:
+                zero = b"\x00" * CHUNK
+                write_all(f, zero * (WIPE // CHUNK), "清零")
+                print(f"已清零前 {WIPE // (1024*1024)} MiB")
+                t0 = time.time()
+                write_all(f, data, "写入")
+                print(f"已写入 {len(data)} B（{time.time() - t0:.2f}s）")
+                f.seek(0)
+                back = f.read(len(data))
+                ok = back == data
+                print(f"回读比对: {len(back)} B  match={ok}")
+                f.seek(len(data))
+                tail = f.read(4096)
+                ok_tail = tail == b"\x00" * 4096
+                print(f"镜像之后 4 KiB 全零: {ok_tail}")
+            break
+        except OSError as e:
+            print(f"第 {attempt} 次整体失败（{e}），1 秒后重试…")
+            time.sleep(1.5)
+    else:
+        print("FAIL: 多次重试仍无法写入")
+        return 1
 
     print()
     print(f"[flash] 回读一致:      {'PASS' if ok else 'FAIL'}")
