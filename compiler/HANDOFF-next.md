@@ -1613,3 +1613,92 @@ U 盘         未改动，可启动（sha256 8f795ac1…）
 已达到：产品内核 100% Ds；自举 T3 完整生成 40,983 字节
 未达到：T2 == T3（差 emit_if 内部的一处误解析 → _start 未注册）
 ```
+
+
+---
+
+# 第 40 轮：重大突破 —— T2 终于能正确工作了！
+
+## 关键修复：has_cmp 对 >> 必须跳过两个字符
+
+```ds
+// 之前（不完整）：第一个 '>' 看到下一个也是 '>' 就跳过，但第二个 '>' 又被当成比较
+if c == 60 || c == 62 {
+    let nx = load8(s + p + i + 1)
+    if nx != c { return 1 }
+}
+
+// 正确：遇到 >> / << 时让 i 多走一步，跳过两个字符
+if c == 60 || c == 62 {
+    let nx = load8(s + p + i + 1)
+    if nx == c { i = i + 1 } else { return 1 }
+}
+```
+
+## 修复后的数据（质变）
+
+```text
+T1 = 14,481
+T2 = 15,160          ← 从 41,464 回落到合理尺寸！
+函数表项数 = 45      ← 全部函数都注册（之前只有 40，_start 丢失）
+T2 垃圾读取 = 0      ← 完全干净
+最小用例(简单)：T1=96 T2=96  一致=True   ← T2 能正确编译了！
+
+T3 = 40,988          ← T2 编译完整 mcc10.ds 时仍偏大
+T4 = 0               ← T3 不能运行
+```
+
+## 现状分析
+
+```text
+✓ T2 对简单程序完全正确（与 T1 输出逐字节相同）
+✓ 所有函数都被正确注册（_start 不再丢失）
+✗ T2 对完整 mcc10.ds 源仍输出 40,988（应为 15,160）
+✗ 所以 T3 是坏的，T4 = 0
+→ T2 还差"处理复杂源码"的能力，但基础已经正确
+```
+
+## 完整修复清单（两处，新 session 直接应用）
+
+```ds
+// 修复 1：has_cmp（在 fn has_cmp 内）
+        if depth == 0 {
+            if c == 61 { return 1 }
+            if c == 60 || c == 62 {
+                let nx = load8(s + p + i + 1)
+                if nx == c { i = i + 1 } else { return 1 }
+            }
+        }
+
+// 修复 2：>> 独立循环（在 emit_expr 的 emit_factor+skip 之后插入）
+    while peek(s) == 62 && peek_at(s, 1) == 62 {
+        advance()  advance()  skip(s)
+        emit(80)
+        emit_factor(s)
+        emit(91)
+        emit(72)  emit(137)  emit(193)   // mov rcx,rax
+        emit(72)  emit(211)  emit(235)   // shr rbx,cl
+        emit(72)  emit(137)  emit(216)   // mov rax,rbx
+        skip(s)
+    }
+// 并从主 while 条件里删掉: || (peek(s) == 62 && peek_at(s, 1) == 62)
+```
+
+## 下一步（新 session）
+
+```text
+1. 应用上面两处修复
+2. 确认 verify_mcc10 仍 PASS、T2 最小用例一致
+3. 然后查："为什么 T2 对完整 mcc10.ds 输出 40,988 而不是 15,160"
+   → 用累积前缀法（T1 vs T2 分别编译前缀，找第一个输出不同的函数）
+   → 注意这次 T2 是【能工作】的编译器，所以可以直接对比输出
+4. 找到后修 → T2 == T3 → 固定点达成
+```
+
+## 当前稳定状态（mcc10.ds 未应用修复）
+
+```text
+verify_mini PASS(17) / verify_mcc10 PASS / verify_mbr16 PASS(3)
+T1=14,212 / T2=15,269 / T3=40,983
+U 盘未改动，可启动（sha256 8f795ac1…）
+```
