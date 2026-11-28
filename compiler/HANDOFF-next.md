@@ -2752,3 +2752,121 @@ U 盘            未改动，可启动（sha256 8f795ac1…）
    字符串字面量（代码生成消除）、fnaddr
 + T2 能编译完整内核（30,123 字节）并运行不崩溃
 ```
+
+
+---
+
+# 第 15 轮：vga_put2 的 codegen 正确，问题在 load8(s+i) 恒返回 1
+
+## 源码（kernel.ds）
+
+```ds
+fn vga_put2(row: i32, col: i32, cp: i32) -> i32 {
+    let base = 753664 + row * 160 + col * 2
+    store8(base, cp & 255)
+    store8(base + 1, (cp >> 8) & 255)      // 属性来自 cp 高字节
+    return 0
+}
+
+fn puts_at(row: i32, col0: i32, s: *u8) -> i32 {
+    let i = 0
+    let c = 1
+    while c != 0 {
+        c = load8(s + i)
+        if c == 0 { return 0 }
+        vga_put(row, col0 + i, c)
+        i = i + 1
+    }
+    return 0
+}
+```
+
+## 反汇编验证
+
+```text
+vga_put2 的 codegen 完全正确：
+  base = 0xB8000 + row*160 + col*2 ✓
+  mov [base], cp&255 ✓
+  mov [base+1], (cp>>8)&255 ✓
+```
+
+## 真正的 bug
+
+```text
+观测：VGA 上写入的字符全是 0x01（每个位置）
+→ load8(s + i) 对每个 i 都返回 1
+→ 要么 s 指向错误地址，要么 load8 本身坏了
+
+注意：str_setup 已验证正确写入 1,460 字节（含 '[' 'b' 'e' ...）
+→ 所以 load8 或 s 的传递有问题
+```
+
+## 下一步（第 16 轮）
+
+```text
+1. 最小用例：T2 编译一个函数
+     fn g(p: *u8) -> i32 { return load8(p) }
+     fn _start() { store8(28672, 65)  sys_exit(g(28672)) }
+   运行 → 应返回 65
+2. 若返回 1 → load8 的 codegen 有 bug
+   若返回 65 → 问题在 puts_at 的 3 参数传递（尽管已修 pop rdx）
+3. 也检查 store8(28672+k, byte) 在 str_setup 里是否真的写对了地址
+```
+
+## 当前状态
+
+```text
+★ 自举固定点    达成并保持（T2 == T3 == 18,638）
+✅ verify_mcc10 / verify_mini / verify_mbr16  PASS
+✅ T2 编译内核   30,123 字节，运行无崩溃
+⚠️ load8(s+i) 恒返回 1
+U 盘            未改动
+目标            goal-3f31cf49 第 15/40 轮
+```
+
+
+---
+
+# 第 16 轮：基础能力全部正确，问题在内核特定调用链
+
+## 最小用例验证（全部 PASS）
+
+```text
+[PASS] 3参数+指针递增  want=2 got=2   （fn g(row,col,s) + while + load8 + i++）
+[PASS] 单参数指针递增  want=2 got=2
+```
+
+→ 3 参数传递、指针递增、while、load8、提前 return 全部正确。
+
+## 结论
+
+```text
+puts_at 本身没有问题；问题在【内核里调用 puts_at 的那条链】：
+  _start → clear_screen() → log(row, s) → puts_at(row, 0, s) → vga_put2(...)
+可能原因：
+  a) log() 的 2 参数传递在特定上下文出错
+  b) 调用点传的 (28672+off) 常量算错
+  c) log 内部还有别的语句干扰（logstore 等）
+```
+
+## 下一步（第 17 轮）
+
+```text
+1. 用 T2 编译与 kernel.ds 的 log/puts_at 完全相同的两个函数 + 一个测试 _start，
+   在 unicorn 里执行，断言 VGA 出现正确字符串
+2. 若通过 → 问题在 kernel.ds 的其他部分（如 logstore 或 clear_screen 的副作用）
+3. 若不通过 → 在这个小上下文里逐字缩小
+```
+
+## 本会话最终状态（第 4-16 轮）
+
+```text
+★ 自举固定点达成并保持：T1=17,822 → T2=T3=18,638
+✅ verify_mcc10 PASS / verify_mini PASS(17) / verify_mbr16 PASS(3)
+✅ T2 编译内核 30,123 字节，运行无崩溃
+✅ 14 项能力补齐（13 内建 + fnaddr）
+✅ 8 类 codegen bug 修复
+⚠️ 内核显示：字符恒为 1（log→puts_at 链）
+U 盘 未改动，可启动（sha256 8f795ac1…）
+目标 goal-3f31cf49 第 16/40 轮
+```
