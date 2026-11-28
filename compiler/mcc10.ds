@@ -243,6 +243,192 @@ fn intr_sys_exit(s: *u8) -> i32 {
 
 // 从当前位置向前扫描到匹配的 ')'，判断括号内是否是"条件"
 // （深度 0 出现 < > = 即视为条件）
+// store16(addr, val) -> push val ; eval addr ; pop rbx ; mov [rbx], ax
+// outbase(p) = 输出缓冲区基址(24576) + p
+fn outbase(p: i32) -> i32 { return 24576 + p }
+
+// fnaddr(name) -> mov eax, imm32（占位，稍后由 resolve_abs 修正）
+fn intr_fnaddr(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    let h = hash_ident(s)
+    skip_ident(s)
+    close_paren(s)
+    emit(184)                                   // mov eax, imm32
+    let pos = load32(12296)
+    emit(0)  emit(0)  emit(0)  emit(0)
+    let n = load32(339968)                      // 0x53000 计数
+    store32(344064 + (n * 4), h)                // 0x54000 哈希表
+    store32(348160 + (n * 4), pos)              // 0x55000 位置表
+    store32(339968, n + 1)
+    return 0
+}
+
+// resolve_abs() -> 把占位的 imm32 修正为 load_base + 函数偏移
+fn resolve_abs() -> i32 {
+    let n = load32(339968)
+    let i = 0
+    while i < n {
+        let h = load32(344064 + (i * 4))
+        let pos = load32(348160 + (i * 4))
+        let off = fn_get(h)
+        let addr = load32(20240) + off
+        store8(outbase(pos), addr as u8)
+        store8(outbase(pos + 1), (addr >> 8) as u8)
+        store8(outbase(pos + 2), (addr >> 16) as u8)
+        store8(outbase(pos + 3), (addr >> 24) as u8)
+        i = i + 1
+    }
+    return 0
+}
+
+fn intr_store16(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(80)
+    skip_comma(s)
+    emit_expr(s)
+    emit(91)
+    emit(102)  emit(137)  emit(3)   // mov [rbx], ax
+    close_paren(s)
+    return 0
+}
+
+// load16(addr) -> eval addr ; movzx eax, word [rax]
+fn intr_load16(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(15)  emit(183)  emit(0)    // movzx eax, word [rax]
+    close_paren(s)
+    return 0
+}
+
+// out8(port, val) -> push val ; eval port ; mov rdx,rax ; pop rax ; out dx,al
+fn intr_out8(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(80)
+    skip_comma(s)
+    emit_expr(s)
+    emit(72)  emit(137)  emit(194)  // mov rdx, rax
+    emit(88)                        // pop rax
+    emit(238)                       // out dx, al
+    close_paren(s)
+    return 0
+}
+
+// in8(port) -> eval port ; mov rdx,rax ; in al,dx ; movzx eax,al
+fn intr_in8(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(72)  emit(137)  emit(194)  // mov rdx, rax
+    emit(236)                       // in al, dx
+    emit(15)  emit(182)  emit(192)  // movzx eax, al
+    close_paren(s)
+    return 0
+}
+
+// cli
+fn intr_cli(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(250)
+    close_paren(s)
+    return 0
+}
+
+// sti
+fn intr_sti(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(251)
+    close_paren(s)
+    return 0
+}
+
+// hlt
+fn intr_hlt(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(244)
+    close_paren(s)
+    return 0
+}
+
+// int3
+fn intr_int3(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(204)
+    close_paren(s)
+    return 0
+}
+
+// lidt(addr) -> eval addr ; lidt [rax]
+fn intr_lidt(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit_expr(s)
+    emit(15)  emit(1)  emit(24)      // lidt [rax]
+    close_paren(s)
+    return 0
+}
+
+// read_cs() -> mov ax,cs ; movzx eax,ax
+fn intr_read_cs(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(102)  emit(140)  emit(200) // mov ax, cs
+    emit(15)  emit(183)  emit(192)  // movzx eax, ax
+    close_paren(s)
+    return 0
+}
+
+// push_all -> 14 个 push（不含 rbp）
+fn intr_push_all(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(80)                          // push rax
+    emit(83)                          // push rbx
+    emit(81)                          // push rcx
+    emit(82)                          // push rdx
+    emit(86)                          // push rsi
+    emit(87)                          // push rdi
+    emit(65)  emit(80)                // push r8
+    emit(65)  emit(81)                // push r9
+    emit(65)  emit(82)                // push r10
+    emit(65)  emit(83)                // push r11
+    emit(65)  emit(84)                // push r12
+    emit(65)  emit(85)                // push r13
+    emit(65)  emit(86)                // push r14
+    emit(65)  emit(87)                // push r15
+    close_paren(s)
+    return 0
+}
+
+// pop_all -> 14 个 pop（逆序）
+fn intr_pop_all(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(65)  emit(95)                // pop r15
+    emit(65)  emit(94)                // pop r14
+    emit(65)  emit(93)                // pop r13
+    emit(65)  emit(92)                // pop r12
+    emit(65)  emit(91)                // pop r11
+    emit(65)  emit(90)                // pop r10
+    emit(65)  emit(89)                // pop r9
+    emit(65)  emit(88)                // pop r8
+    emit(95)                          // pop rdi
+    emit(94)                          // pop rsi
+    emit(90)                          // pop rdx
+    emit(89)                          // pop rcx
+    emit(91)                          // pop rbx
+    emit(88)                          // pop rax
+    close_paren(s)
+    return 0
+}
+
+// irq_return -> mov rsp,rbp ; pop rbp ; iretq
+fn intr_irq_return(s: *u8) -> i32 {
+    skip_name_and_paren(s)
+    emit(72)  emit(137)  emit(236)  // mov rsp, rbp
+    emit(93)                       // pop rbp
+    emit(72)  emit(207)            // iretq
+    close_paren(s)
+    return 0
+}
+
 fn has_cmp(s: *u8) -> i32 {
     let p = load32(12288)
     let depth = 0
@@ -288,6 +474,20 @@ fn emit_factor(s: *u8) -> i32 {
         if hh == 42181 { return intr_load32(s) }
         if hh == 7992 { return intr_sys_exit(s) }
         if hh == 62581 { return intr_run(s) }
+        if hh == 35572 { return intr_store16(s) }
+        if hh == 42119 { return intr_load16(s) }
+        if hh == 57072 { return intr_out8(s) }
+        if hh == 52495 { return intr_in8(s) }
+        if hh == 45944 { return intr_cli(s) }
+        if hh == 63632 { return intr_sti(s) }
+        if hh == 51400 { return intr_hlt(s) }
+        if hh == 30430 { return intr_int3(s) }
+        if hh == 1261 { return intr_lidt(s) }
+        if hh == 54673 { return intr_read_cs(s) }
+        if hh == 56920 { return intr_push_all(s) }
+        if hh == 44455 { return intr_pop_all(s) }
+        if hh == 47947 { return intr_irq_return(s) }
+        if hh == 40719 { return intr_fnaddr(s) }
         return emit_call(s)
     }
     skip_ident(s)
@@ -673,6 +873,7 @@ fn emit_stmt(s: *u8) -> i32 {
 }
 
 fn _start() {
+    store32(20240, 36864)   // 默认加载基址 0x9000
     store32(12288, 0)
     store32(12296, 0)
     store32(409600, 0)
@@ -700,5 +901,6 @@ fn _start() {
     resolve_calls()
 
     if load8(131072) == 64 { sys_exit(load32(12296)) }
+    resolve_abs()
     sys_exit(0)
 }
