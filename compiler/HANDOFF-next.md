@@ -3298,3 +3298,60 @@ B) 第 25 轮测试（2 函数）：
 ⚠️ T2 对某些嵌套调用形态出错（下一步定位）
 U 盘 未改动，可启动
 ```
+
+
+---
+
+# 第 26 轮：重要澄清——前几轮的"编译失败"是 harness bug
+
+## 真因
+
+```text
+第 24-25 轮报告 T2 编译失败（0 字节，Invalid memory write）
+真因：我的测试脚本 mem_map(0, 0x1000000)（16MB）但 rsp=0x1800000（24MB）
+→ 函数序言 push rbp 写到 0x17ffff8（超出映射）→ 崩溃
+与 T2 / mcc10 完全无关！
+```
+
+## 修正后：6 函数显示链 PASS ★
+
+```text
+程序：vga_put2 + vga_put + puts_at + hexc + heartbeat + _start
+T2 编译 → 1,017 字节
+执行   → exit=0, err=None
+VGA 第 1 行 = 'DsOS..04D2......'
+              · "DsOS" 来自 puts_at
+              · "04D2" 来自 4 次 vga_put(hexc((n>>k)&15))，n=1234 ✓
+→ puts_at + hexc + 移位 + 掩码 + 多次 vga_put 全部正确！
+```
+
+## 教训（写进 AGENTS 规则）
+
+```text
+测试 harness 的 mem_map 必须覆盖 rsp 指向的区域。
+推荐：mem_map(0, 0x2000000) 且 rsp ≤ 0x1F00000。
+前几轮几个"编译器 bug"的误判都源于此。
+```
+
+## 下一步（第 27 轮）
+
+```text
+现在显示链已验证正确，重新审视完整内核的问题：
+1. 完整内核的 smoke test 用的是 mem_map(0,0x400000) + rsp=0x300000 ✓ 合法
+   → 所以内核的字符=1 是真实问题
+2. 但既然 heartbeat/puts_at 都正确，怀疑点转向：
+   · 内核里别的函数（logstore/status_bar/scroll）写坏了 VGA
+   · 或某个函数的局部变量槽冲突
+3. 用"逐函数加入"法：从 6 函数 PASS 的版本出发，逐个加入内核其余函数
+```
+
+## 当前状态
+
+```text
+★★★ 自举固定点达成（T2 == T3 == 18,638）
+✅ 全部验收 PASS
+✅ 显示链 + heartbeat 6 函数测试 PASS（第 1 行显示 'DsOS..04D2'）
+⚠️ 完整内核显示（继续用逐函数加入法排查）
+U 盘 未改动
+目标 goal-3f31cf49 第 26/40 轮
+```
