@@ -806,6 +806,7 @@ fn emit_fn(s: *u8) -> i32 {
     emit(72)  emit(129)  emit(236)  emit32(4096)
     if nparams >= 1 { emit(137)  emit(189)  emit32(0 -4) }
     if nparams >= 2 { emit(137)  emit(181)  emit32(0 -8) }
+    if nparams >= 3 { emit(137)  emit(149)  emit32(0 -12) }   // mov [rbp-12], edx（第 3 个参数）
 
     let ret_base = load32(335872)
     skip(s)

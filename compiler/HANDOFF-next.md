@@ -2558,3 +2558,68 @@ VGA 写次数 = 378,162（大量写入，说明在跑）
 U 盘            未改动
 目标            goal-3f31cf49 第 10/40 轮
 ```
+
+
+---
+
+# 第 11-12 轮：3 参数 bug 已修，新症状 = puts_at 只写 1 个字符
+
+## 已修（真实 bug）
+
+```ds
+// mcc10 的 emit_fn 只保存前 2 个参数
+if nparams >= 1 { ... [rbp-4] <- edi }
+if nparams >= 2 { ... [rbp-8] <- esi }
++ if nparams >= 3 { emit(137) emit(149) emit32(0 -12) }   // [rbp-12] <- edx
+```
+效果：VGA 写入从"全 0"变成"有真实字符"。
+
+## 验证
+
+```text
+verify_mcc10    PASS
+verify_selfhost PASS ★ T1=17,776  T2=T3=18,595  固定点保持
+T2 编译内核     30,089 字节，运行无崩溃
+```
+
+## 新症状（精确）
+
+```text
+运行 500K 指令后屏幕：
+  行0: d
+  行1: d
+  行2: d
+  行3: d
+  行4: d
+→ 每行只写出 1 个字符 'd'，其余全空
+→ puts_at(row, col, s) 的循环只执行一次
+```
+
+## 下一步（第 13 轮）
+
+```text
+1. 反汇编 puts_at，检查它的 while 循环：
+   while load8(s) != 0 {
+       vga_put(row, col, load8(s))
+       col = col + 1
+       s = s + 1
+   }
+2. 重点看：
+   · s = s + 1 是否发出了（若不发出会无限循环，但实测只写一次 → 循环条件先失败）
+   · load8(s) 的第二次求值是否读到 0（即 s 没递增）
+   · 或者 col = col + 1 丢失 → 每行只写一格
+3. 最小用例：喂给 T2 一段
+     fn f(s: *u8) -> i32 { while load8(s) != 0 { store8(32768 + load32(12288), load8(s)) s = s + 1 } return 0 }
+   验证 while + 指针递增 + load8 的组合
+```
+
+## 当前状态
+
+```text
+★ 自举固定点    达成并保持（T2 == T3 == 18,595）
+✅ verify_mcc10  PASS
+✅ T2 编译内核   30,089 字节，运行无崩溃
+⚠️ puts_at      每行只写 1 个字符
+U 盘            未改动
+目标            goal-3f31cf49 第 12/40 轮
+```
