@@ -2928,3 +2928,58 @@ U 盘 未改动，可启动（sha256 8f795ac1…）
 U 盘            未改动
 目标            goal-3f31cf49 第 18/40 轮
 ```
+
+
+---
+
+# 第 19 轮：puts_at 及调用点全部正确 → 屏幕上的 1/0 来自别的函数
+
+## 调用链（rbp 回溯 + 反汇编双重验证）
+
+```text
+_start(0xac63) → puts_at(0x925c) → vga_put(0x9127) → vga_put2(0x90xx) → VGA
+
+_start 调用点:
+  0xac6f: mov eax, 0x7115    ; s = 28949 = 0x7115 ✓
+  0xac68/0xac6e: push 0, push 0   ; row=0,col=0 ✓
+  0xac75: pop rdx  ; = 0x7115 ✓
+  0xac76: pop rsi  ; = 0 ✓
+  0xac77: pop rdi  ; = 0 ✓
+  0xac78: call 0x925c
+
+puts_at:
+  0x9267: mov [rbp-4], edi    ; row ✓
+  0x926d: mov [rbp-8], esi    ; col0 ✓
+  0x9273: mov [rbp-0xc], edx  ; s ✓
+  0x92ae-0x92be: load8(s+i)   ; ✓ 正确
+```
+
+**参数传递、槽位分配、load8 全部正确！**
+
+## 推论
+
+观测到的"全屏 char=1, attr=0"写入（4000+ 次）**不是来自 puts_at**
+（字符串输出不会写满整屏）→ 是另一个函数的全屏操作写坏了屏幕，
+把 puts_at 写的 "DsOS..." 覆盖了。
+
+候选：clear() / divider() / status_bar() / scroll() / logstore()
+
+## 下一步（第 20 轮，最关键）
+
+```text
+1. hook 全部 VGA 写入，记录 rip 分布（按 rip 分组统计次数）
+2. 找到写全屏的那个 rip → 反汇编它 → 定位源码
+3. 那个函数很可能把"行号/列号"当字符写了（char=1 说明是第一行/第一个）
+```
+
+## 当前状态
+
+```text
+★ 自举固定点    达成并保持（T2 == T3 == 18,638）
+✅ 全部验收      PASS
+✅ 显示链        T2 编译后正确显示 "DsOS"（最小用例 710 字节）
+✅ puts_at       参数/槽位/load8 全部正确（反汇编证明）
+⚠️ 完整内核      某个全屏函数覆盖了屏幕
+U 盘            未改动
+目标            goal-3f31cf49 第 19/40 轮
+```
