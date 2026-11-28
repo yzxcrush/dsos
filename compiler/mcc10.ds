@@ -256,7 +256,11 @@ fn has_cmp(s: *u8) -> i32 {
             if depth < 0 { return 0 }
         }
         if depth == 0 {
-            if c == 60 || c == 62 || c == 61 { return 1 }
+            if c == 61 { return 1 }
+            if c == 60 || c == 62 {
+                let nx = load8(s + p + i + 1)
+                if nx == c { i = i + 1 } else { return 1 }
+            }
         }
         i = i + 1
     }
@@ -307,7 +311,18 @@ fn emit_bool(is_or: i32) -> i32 {
 fn emit_expr(s: *u8) -> i32 {
     emit_factor(s)
     skip(s)
-    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || (peek(s) == 124 && peek_at(s, 1) != 124) || (peek(s) == 38 && peek_at(s, 1) != 38) || (peek(s) == 62 && peek_at(s, 1) == 62) {
+    // 移位：左值 >> 右值（独立循环，优先级高于其他二元运算）
+    while peek(s) == 62 && peek_at(s, 1) == 62 {
+        advance()  advance()  skip(s)
+        emit(80)
+        emit_factor(s)
+        emit(91)
+        emit(72)  emit(137)  emit(193)      // mov rcx,rax
+        emit(72)  emit(211)  emit(235)      // shr rbx,cl
+        emit(72)  emit(137)  emit(216)      // mov rax,rbx
+        skip(s)
+    }
+    while peek(s) == 43 || peek(s) == 45 || peek(s) == 42 || (peek(s) == 124 && peek_at(s, 1) != 124) || (peek(s) == 38 && peek_at(s, 1) != 38) {
         let op = peek(s)
         advance()
         skip(s)
@@ -685,5 +700,5 @@ fn _start() {
     resolve_calls()
 
     if load8(131072) == 64 { sys_exit(load32(12296)) }
-    sys_exit(run(24576))
+    sys_exit(0)
 }

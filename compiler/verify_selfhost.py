@@ -26,13 +26,14 @@ HOST = 0x10000      # 编译器自身入口
 SRCBUF = 0x20000    # 源码缓冲（mcc10 约定）
 OUTBUF = 0x6000     # 生成代码缓冲（mcc10 约定）
 LENVAR = 0x3008     # 生成长度变量
-STACK = 0x30000
+STACK = 0x800000
 
 
 def compile_with(compiler, label):
+    """mcc10 是纯编译器：运行到 sys_exit 即完成发射，产物在 OUTBUF。"""
     """用 compiler 编译 mcc10.ds，返回生成的机器码。"""
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
-    uc.mem_map(0, 0x400000)
+    uc.mem_map(0, 0x1000000)
     uc.mem_write(HOST, compiler)
     uc.mem_write(SRCBUF, SRC + b"\x00")
     uc.reg_write(UC_X86_REG_RSP, STACK)
