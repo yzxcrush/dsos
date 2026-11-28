@@ -146,6 +146,7 @@ fn emit_call(s: *u8) -> i32 {
         if peek(s) == 44 { advance()  skip(s) }
     }
     advance()
+    if nargs >= 3 { emit(90) }              // pop rdx（第 3 个参数）
     if nargs >= 2 { emit(94) }
     if nargs >= 1 { emit(95) }
     emit(232)

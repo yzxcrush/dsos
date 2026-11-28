@@ -2623,3 +2623,67 @@ T2 编译内核     30,089 字节，运行无崩溃
 U 盘            未改动
 目标            goal-3f31cf49 第 12/40 轮
 ```
+
+
+---
+
+# 第 13 轮：修复 emit_call 不支持 3 个参数（重大 bug）
+
+## bug
+
+```ds
+// emit_call 把所有参数压栈，但只 pop 2 个
+if nargs >= 2 { emit(94) }   // pop rsi
+if nargs >= 1 { emit(95) }   // pop rdi
+emit(232)                    // call
+// ← 缺少 if nargs >= 3 { emit(90) }  // pop rdx
+```
+
+3 个参数的调用（vga_put(row,col,ch)、puts_at(row,col,s)、logstore）：
+第 3 个参数留在栈上，rdx 从未被赋值 → 第 3 个参数永远是垃圾。
+
+## 修复
+
+```ds
+if nargs >= 3 { emit(90) }   // pop rdx
+if nargs >= 2 { emit(94) }
+if nargs >= 1 { emit(95) }
+```
+
+## 验证
+
+```text
+verify_mcc10    PASS
+verify_selfhost PASS ★ T1=17,822  T2=T3=18,638  固定点保持
+T2 编译内核     30,123 字节
+T2 内核运行     无崩溃
+```
+
+## 症状变化
+
+```text
+修复前: VGA 字符分布 [0: 92,003, 'd': 91,505]   （垃圾字符）
+修复后: VGA 字符分布 [1: 104,779, 0: 104,779]   （1/0 交替）
+→ 仍是错误的值，但形态变了：说明 3 参数修好了，暴露下一层
+```
+
+## 下一步（第 14 轮）
+
+```text
+VGA 收到 1/0 交替 → 可能是：
+  a) vga_put 写字符后写属性，但属性值变成 0/1（不是 7）
+  b) 某个循环把计数器当字符写
+  c) clear_screen 循环的 i 被当字符
+检查：hook VGA 写入，记录 (偏移, 值) 的前 20 次，看是否成对 (字符,属性)
+```
+
+## 当前状态
+
+```text
+★ 自举固定点    达成并保持（T2 == T3 == 18,638）
+✅ verify_mcc10  PASS
+✅ T2 编译内核   30,123 字节，运行无崩溃
+⚠️ 屏幕内容错    VGA 收到 1/0 交替
+U 盘            未改动
+目标            goal-3f31cf49 第 13/40 轮
+```
