@@ -3245,3 +3245,56 @@ T2 编译器在所有【独立最小用例】上都正确：
 ⚠️ 完整内核显示 + 6 函数测试失败（待新 session）
 U 盘 未改动，可启动
 ```
+
+
+---
+
+# 第 25 轮：T2 在简单程序上也失败（重要不一致）
+
+## 现象对比（同一个 T2.bin，18,638 字节）
+
+```text
+A) 第 23 轮测试（3 函数）：
+     fn hexc(n) { if n<10 { return 48+n } return 55+n }
+     fn heartbeat(n) { sys_exit(hexc((n >> 8) & 15)) return 0 }
+     fn _start() { heartbeat(1234)  sys_exit(99) }
+   → 编译成功，执行 exit=52 ✓
+
+B) 第 25 轮测试（2 函数）：
+     fn hexc(n) { if n<10 { return 48+n } return 55+n }
+     fn _start() { sys_exit(hexc(5)) }
+   → 编译失败：Invalid memory write (UC_ERR_WRITE_UNMAPPED)，输出 0 字节
+```
+
+## 意义
+
+```text
+这两个程序只差在 _start 的调用方式：
+  A: _start → heartbeat(1234) → hexc(...)  （两层调用）
+  B: _start → hexc(5)                      （一层调用 + 立即用作 sys_exit 参数）
+
+→ 说明 T2（或 mcc10）对【某些特定调用形态】处理错误
+→ 这也解释了为什么完整内核会出问题：它包含各种调用形态
+```
+
+## 新 session 的第一步（高优先级）
+
+```text
+1. 用 A/B 两个最小程序做对比（都只有 2-3 个函数），
+   反汇编 T2 对 B 的处理过程，找出写未映射内存的位置
+   （用 hook UC_HOOK_MEM_WRITE_UNMAPPED 记录 addr 与 rip）
+2. 对比 mcc10 的 emit_call / intr_sys_exit 处理嵌套调用的逻辑
+   → 很可能是"内建参数里再调用函数"这种嵌套形态出错
+3. 修好后重新测试完整内核
+```
+
+## 本次会话最终状态
+
+```text
+★★★ 自举固定点达成：T2 == T3 == 18,638（verify_selfhost PASS）
+✅ verify_mcc10 / verify_mini(17) / verify_mbr16(3) 全 PASS
+✅ T2.bin 18,638 字节已保存
+✅ 修复 8 类 bug + 补齐 14 项能力
+⚠️ T2 对某些嵌套调用形态出错（下一步定位）
+U 盘 未改动，可启动
+```
