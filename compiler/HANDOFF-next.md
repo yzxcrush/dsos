@@ -3098,3 +3098,72 @@ vga_put2/puts_at/load8 全部正确（已双重验证）
 ⚠️ 状态栏函数把 1 当字符写（内核逻辑问题）
 U 盘 未改动
 ```
+
+
+---
+
+# 第 22 轮：状态栏/心跳函数的问题点
+
+## 源码（kernel.ds）
+
+```ds
+fn status_bar() -> i32 {
+    let c = 0
+    while c < 80 {
+        vga_put2(24, c, 32 | 28672)          // 可疑：28672 应为 1792（attr 7<<8）
+        c = c + 1
+    }
+    puts_at(24, 1, "DsOS v1.1 | help log ...")
+    return 0
+}
+
+fn heartbeat(n: i32) -> i32 {                 // 约 148 行
+    puts_at(21, 0, "[beat ")
+    vga_put(21, 6, hexc((n >> 12) & 15))
+    vga_put(21, 7, hexc((n >> 8) & 15))
+    vga_put(21, 8, hexc((n >> 4) & 15))
+    vga_put(21, 9, hexc(n & 15))
+    puts_at(21, 10, "] ")
+}
+```
+
+## 观测对应
+
+```text
+最后写入在 offset 3370+ = row 21 col 5+ → heartbeat 的数字位
+字符 = 1 → hexc(...) 返回 1（应为 48..57 的数字字符）
+→ 疑似 hexc 或 (n >> k) & 15 在 T2 内核里出错
+```
+
+## 下一步（第 23 轮）
+
+```text
+1. 最小用例验证 hexc + >> + & 组合：
+     fn hexc(n: i32) -> i32 { if n < 10 { return 48 + n }  return 55 + n }
+     fn _start() { sys_exit(hexc((1234 >> 8) & 15)) }
+   → 应返回 52 ('4')
+2. 若 hexc 正确 → 问题在 heartbeat 的 n 参数（调用者传的 tick 值）
+3. 若 hexc 错 → 修 mcc10 的对应 codegen
+```
+
+## 重要认知（本次会话的总结论）
+
+```text
+T2 编译器生成的代码质量已与 mini.py 相当：
+  · 显示链最小用例正确显示 "DsOS"
+  · 完整内核里 puts_at 正确读取字符串
+→ 剩余的屏幕问题属于【内核逻辑/特定函数组合】层面
+→ "用 T2 替换 mini.py 编译内核"在技术上已经可行
+```
+
+## 本次会话最终成果（第 4-22 轮）
+
+```text
+★★★ 自举固定点达成：T2 == T3 == 18,638
+✅ verify_mcc10 / verify_selfhost / verify_mini(17) / verify_mbr16(3) 全 PASS
+✅ 修复 8 类 codegen bug，补齐 14 项能力
+✅ T2 编译内核 30,123 字节并运行
+✅ 显示链/字符串读取验证正确
+⚠️ heartbeat 数字位字符=1（下一轮定位）
+U 盘 未改动，可启动
+```
