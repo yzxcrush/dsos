@@ -3424,3 +3424,53 @@ fn heartbeat(n: i32) -> i32 {
 ⚠️ 完整内核 heartbeat 数字位显示异常（待逐函数加入法定位）
 U 盘 未改动，可启动
 ```
+
+
+---
+
+# 第 28 轮：内核结构完整性确认
+
+## 检查结果
+
+```text
+内核函数列表（36 个）：
+  vga_put2 vga_put clear clear_row puts_at hexc logstore dump_log scroll_log
+  log delay heartbeat divider status_bar sc2ascii is_rsdp is_facp find_rsdp
+  find_fadt shutdown idt_set exc_name exc_common exc_0 exc_3 exc_6 exc_8
+  exc_13 exc_14 exc_other timer_irq pic_remap pit_init savelog setup_idt _start
+
+哈希碰撞：0 ✓
+缺失函数：0（halt/interrupts/polling/timer 只是注释里的词）✓
+```
+
+## 结论
+
+```text
+内核结构完整、无碰撞、无误调
+→ 显示问题仍需"逐函数加入法"在新 session 定位
+→ 所有诊断基础设施和 6 函数 PASS 版本都已在 HANDOFF 中
+```
+
+## 建议：新 session 从这里开始
+
+```text
+1. 复制 _bisect3.py 的 6 函数 PASS 版本
+2. 依次加入：clear/clear_row/divider/status_bar → log/logstore → setup_idt → 主循环
+3. 每步检查 VGA（注意 mem_map ≥ rsp！）
+4. 找到第一个让显示失效的函数 → 单独分析该函数
+```
+
+## 本次会话最终交付（第 4-28 轮）
+
+```text
+★★★ 自举固定点达成并保持：T2 == T3 == 18,638
+✅ verify_mcc10 / verify_selfhost / verify_mini(17) / verify_mbr16(3) 全 PASS
+✅ 修复 8 类 mcc10 codegen bug
+✅ 补齐 14 项能力（13 内建 + fnaddr）
+✅ T2 能编译完整内核（30,123 字节）并运行无崩溃
+✅ 6 函数显示链测试 PASS（'DsOS..04D2'）
+✅ 完整内核 puts_at 读字符串正确（运行时验证）
+✅ 内核结构完整性确认（36 函数、无碰撞）
+⚠️ 完整内核屏幕显示（逐函数加入法定位）
+U 盘 未改动，可启动（sha256 8f795ac1…）
+```
