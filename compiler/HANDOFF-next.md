@@ -3355,3 +3355,72 @@ VGA 第 1 行 = 'DsOS..04D2......'
 U 盘 未改动
 目标 goal-3f31cf49 第 26/40 轮
 ```
+
+
+---
+
+# 第 27 轮：主循环分析
+
+## 内核主循环源码
+
+```ds
+let hsh = 0
+let nlen = 0
+let beat = 0
+while 1 == 1 {
+    beat = beat + 1
+    heartbeat(beat)
+    if (beat & 7) == 0 {
+        let t = load32(20232)
+        puts_at(24, 52, "[tick ")
+        vga_put(24, 58, hexc((t >> 12) & 15))
+        ...
+    }
+    ...键盘轮询...
+}
+```
+
+## heartbeat
+
+```ds
+fn heartbeat(n: i32) -> i32 {
+    puts_at(21, 0, (28672+off))       // "[beat "
+    vga_put(21, 6, hexc((n >> 12) & 15))
+    vga_put(21, 7, hexc((n >> 8) & 15))
+    vga_put(21, 8, hexc((n >> 4) & 15))
+    vga_put(21, 9, hexc(n & 15))
+    puts_at(21, 10, ...)              // "] "
+}
+```
+
+## 观测
+
+```text
+最后 30 次 VGA 写在 row 21 col 5-11：
+  char = 0x01 — 这是数字位（col 6-9）
+而 6 函数最小测试里同样的代码正确显示 "04D2"
+→ 差异点待查（可能是 beat 值、或内核上下文里的函数交互）
+```
+
+## 新 session 的最快路径
+
+```text
+把 6 函数 PASS 的测试逐个加入内核的其余函数：
+  第 1 步: + clear / clear_row / divider / status_bar
+  第 2 步: + log / logstore
+  第 3 步: + setup_idt / exc_*
+  第 4 步: + 主循环（含键盘轮询）
+每步编译+运行+检查 VGA 行 0/1/21/24，找到第一个出问题的函数。
+（注意：mem_map 必须 ≥ rsp，建议 mem_map(0,0x2000000) + rsp=0x1800000）
+```
+
+## 本次会话最终状态
+
+```text
+★★★ 自举固定点达成：T2 == T3 == 18,638
+✅ verify_mcc10 / verify_selfhost / verify_mini(17) / verify_mbr16(3) 全 PASS
+✅ 6 函数显示链 + heartbeat 测试 PASS（'DsOS..04D2'）
+✅ T2 编译内核 30,123 字节，运行无崩溃
+⚠️ 完整内核 heartbeat 数字位显示异常（待逐函数加入法定位）
+U 盘 未改动，可启动
+```
